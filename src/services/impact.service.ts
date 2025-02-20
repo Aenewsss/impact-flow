@@ -13,11 +13,11 @@ class ImpactService {
         }
     }
 
-    async updateFlow(node) {
-        const nodeRef = ref(realtimeDb, `flows/${node.id}`);
+    async updateFlow(node,userUID) {
+        const nodeRef = ref(realtimeDb, `flows/${userUID}/${node.id}`);
         try {
             await set(nodeRef, {
-                ...node
+                ...node, dragging: false, selected: false
             });
         } catch (error) {
             console.error("Erro ao atualizar node:", error);
