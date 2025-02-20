@@ -13,7 +13,7 @@ class ImpactService {
         }
     }
 
-    async updateFlow(node,userUID) {
+    async updateFlow(node, userUID) {
         const nodeRef = ref(realtimeDb, `flows/${userUID}/${node.id}`);
         try {
             await set(nodeRef, {
@@ -23,6 +23,15 @@ class ImpactService {
             console.error("Erro ao atualizar node:", error);
         }
     };
+
+    async removeFlow(userUID: string, docId: string) {
+        try {
+            await remove(ref(realtimeDb, `flows/${userUID}/${docId}`));
+            console.log("Documento removido com sucesso:", docId);
+        } catch (error) {
+            console.error("Erro ao remover documento:", error);
+        }
+    }
 
     async registerConnection(data) {
         try {

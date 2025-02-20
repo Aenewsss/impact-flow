@@ -9,10 +9,15 @@ import { onAuthStateChanged } from "firebase/auth";
 import React, { useState, useCallback, useEffect } from "react";
 import ReactFlow, { Controls, addEdge, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, } from "reactflow";
 import "reactflow/dist/style.css";
+import { useRouter } from "next/navigation";
+import userService from "@/services/user.service";
+import { PlanEnum } from "@/enum/plan.enum";
 
 const nodeTypes = { custom: CustomNode };
 
 export default function FlowApp() {
+  const router = useRouter()
+
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedNode, setSelectedNode] = useState(null);
@@ -24,10 +29,11 @@ export default function FlowApp() {
   useEffect(() => {
     // Obter o usuário autenticado
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user && user.email) {
-        setUserUID(user.email.replace(/\./g, "_")); // Firebase não permite '.' nos IDs
+      if (user && user.uid) {
+        setUserUID(user.uid)
       } else {
-        setUserUID(null);
+        router.push('/login')
+        // setUserUID(null);
       }
     });
 
@@ -37,35 +43,32 @@ export default function FlowApp() {
   useEffect(() => {
     if (!userUID) return;
 
+    fetchNodes()
+  }, [userUID]);
+
+  async function fetchNodes() {
     const nodesRef = ref(realtimeDb, `flows/${userUID}`);
     const edgesRef = ref(realtimeDb, `connections/${userUID}`);
 
-    const unsubscribeNodes = onValue(nodesRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const nodesData = Object.values(snapshot.val()).map((node: any) => ({
-          ...node,
-          position: node.position || { x: 0, y: 0 },
-        }));
-        setNodes(nodesData);
-      }
-    });
+    const nodesSnapshot = await get(nodesRef)
+    if (nodesSnapshot.exists()) {
+      const nodesData = Object.values(nodesSnapshot.val()).map((node: any) => ({
+        ...node,
+        position: node.position || { x: 0, y: 0 },
+      }));
+      setNodes(nodesData);
+    }
 
-    const unsubscribeEdges = onValue(edgesRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const edgesData = Object.values(snapshot.val()).map((edge: any) => ({
-          ...edge,
-          source: edge.source || "",
-          target: edge.target || "",
-        }));
-        setEdges(edgesData);
-      }
-    });
 
-    return () => {
-      unsubscribeNodes();
-      unsubscribeEdges();
-    };
-  }, [userUID]);
+    const edgesSnapshot = await get(edgesRef)
+    if (edgesSnapshot.exists()) {
+      const edgesData = Object.values(edgesSnapshot.val()).map((node: any) => ({
+        ...node,
+        position: node.position || { x: 0, y: 0 },
+      }));
+      setEdges(edgesData);
+    }
+  }
 
   const onConnect = useCallback(
     async (params) => {
@@ -107,8 +110,6 @@ export default function FlowApp() {
       const nodeRef = ref(realtimeDb, `flows/${userUID}/${id}`);
       set(nodeRef, { ...updatedNode, data: { ...updatedNode.data, label } }) // Mantém os dados existentes
         .catch((error) => console.error("Erro ao salvar nome do fluxo:", error));
-
-      console.log("Nome do fluxo atualizado no banco:", label);
     }, 1000);
   };
 
@@ -144,7 +145,7 @@ export default function FlowApp() {
   }
 
   function clearImpact() {
-    setNodes(nodes)
+    fetchNodes()
   }
 
   // 📌 Atualiza a posição do node ao mover
@@ -153,7 +154,12 @@ export default function FlowApp() {
   };
 
   // 📌 Função para criar um novo node no centro da tela
-  const createNewNode = () => {
+  const createNewNode = async () => {
+
+    if (await userService.getUserPlan(userUID) == PlanEnum.FREE && nodes.length == 10) {
+      return showToast('Vc não pode criar mais de 10 fluxos no plano gratuito')
+    }
+
     if (!reactFlowInstance) return;
 
     const viewport = reactFlowInstance.getViewport();
@@ -184,6 +190,10 @@ export default function FlowApp() {
     }
   };
 
+  const onNodeDelete = async (node) => {
+    impactService.removeFlow(userUID, node[0].id)
+    setSelectedNode('')
+  }
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
       <button
@@ -198,6 +208,7 @@ export default function FlowApp() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onNodesDelete={onNodeDelete}
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
         fitView
@@ -232,7 +243,7 @@ export default function FlowApp() {
 
             />
           </div>
-          <button disabled={showEmptyEdges} style={{ background: showEmptyEdges && 'gray' }} onClick={() => viewImpact(null, null, null)} className="px-4 py-2 bg-blue-500 text-white rounded top-4 left-4 z-10">
+          <button disabled={showEmptyEdges} style={{ background: showEmptyEdges && 'gray' }} onClick={() => viewImpact(null, null)} className="px-4 py-2 bg-blue-500 text-white rounded top-4 left-4 z-10">
             {showEmptyEdges ? 'Nenhum fluxo conectado' : 'Visualizar impacto'}
           </button>
         </div>
