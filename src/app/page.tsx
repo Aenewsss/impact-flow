@@ -12,6 +12,7 @@ import "reactflow/dist/style.css";
 import { useRouter } from "next/navigation";
 import userService from "@/services/user.service";
 import { PlanEnum } from "@/enum/plan.enum";
+import PricingModal from "@/components/PricingModal";
 
 const nodeTypes = { custom: CustomNode };
 
@@ -23,6 +24,7 @@ export default function FlowApp() {
   const [selectedNode, setSelectedNode] = useState(null);
   const [userUID, setUserUID] = useState<string | null>(null); // Estado para armazenar e-mail do usuário
   const [showEmptyEdges, setShowEmptyEdges] = useState(false);
+  const [showModalSubscription, setShowModalSubscription] = useState(false);
 
   const reactFlowInstance = useReactFlow(); // Hook para pegar as dimensões da tela
 
@@ -157,7 +159,8 @@ export default function FlowApp() {
   const createNewNode = async () => {
 
     if (await userService.getUserPlan(userUID) == PlanEnum.FREE && nodes.length == 10) {
-      return showToast('Vc não pode criar mais de 10 fluxos no plano gratuito')
+      showToast("Você atingiu o limite do plano gratuito", 'warning');
+      return setShowModalSubscription(true)
     }
 
     if (!reactFlowInstance) return;
@@ -253,6 +256,8 @@ export default function FlowApp() {
         nodes.some(node => JSON.stringify(node.style)?.includes('2px solid red')) &&
         <button onClick={clearImpact} className="p-2 rounded bg-red-500 absolute top-4 right-4">Limpar</button>
       }
+
+      {showModalSubscription && <PricingModal userUID={userUID} onClose={() => setShowModalSubscription(false)} />}
     </div>
   );
 }
