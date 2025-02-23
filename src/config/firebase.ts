@@ -9,7 +9,6 @@ import { getDatabase } from "firebase/database";
 
 // Your web app's Firebase configuration
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-console.log(process.env.NEXT_PUBLIC_apiKey)
 
 const firebaseConfig = {
     apiKey: process.env.NEXT_PUBLIC_apiKey,

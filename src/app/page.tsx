@@ -61,8 +61,6 @@ export default function FlowApp() {
 
 
   const handleNodesChange = (changes) => {
-    console.log('here')
-
     onNodesChange(changes); // 🔥 Mantém o comportamento original do React Flow
 
     setNodes(prevNodes =>
@@ -301,11 +299,7 @@ export default function FlowApp() {
         style: { border: "2px solid red" },
       }));
 
-      console.log(nodesImpactedArray)
-
       const nodesNoImpacted = nodes.filter(node => !nodesImpacted.has(node.id));
-
-      console.log(nodesNoImpacted)
 
       setNodes([...nodesNoImpacted, ...nodesImpactedArray]);
     }
@@ -364,7 +358,6 @@ export default function FlowApp() {
     setSelectedNode('')
   }
 
-  console.log(nodes)
 
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
