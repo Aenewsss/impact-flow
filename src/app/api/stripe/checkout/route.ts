@@ -30,6 +30,10 @@ export async function POST(request: NextRequest) {
             ],
             success_url: `${process.env.NEXT_PUBLIC_APP_URL}/pagamento?success=true`,
             cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/pagamento?success=false`,
+            metadata: {
+                userEmail: email,
+                chosenPlan: planPrices[planType]
+            }
         });
 
         return NextResponse.json({ url: session.url });

@@ -7,14 +7,22 @@ import { showToast } from "@/utils/show-toast.util";
 import { get, onValue, ref, remove, set } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import React, { useState, useCallback, useEffect } from "react";
-import ReactFlow, { Controls, addEdge, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, } from "reactflow";
+import ReactFlow, { Controls, addEdge, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, SelectionMode, MiniMap, } from "reactflow";
 import "reactflow/dist/style.css";
 import { useRouter } from "next/navigation";
 import userService from "@/services/user.service";
 import { PlanEnum } from "@/enum/plan.enum";
 import PricingModal from "@/components/PricingModal";
+import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
+import CreateNewFolderOutlinedIcon from '@mui/icons-material/CreateNewFolderOutlined';
+import FolderSpecialOutlinedIcon from '@mui/icons-material/FolderSpecialOutlined';
+import { v4 as uuidv4 } from "uuid"; // 📌 Importar biblioteca para gerar IDs únicos
+import CustomGroup from "@/components/GroupNode";
 
-const nodeTypes = { custom: CustomNode };
+const nodeTypes = {
+  custom: CustomNode,
+  group: CustomGroup
+};
 
 export default function FlowApp() {
   const router = useRouter()
@@ -25,6 +33,9 @@ export default function FlowApp() {
   const [userUID, setUserUID] = useState<string | null>(null); // Estado para armazenar e-mail do usuário
   const [showEmptyEdges, setShowEmptyEdges] = useState(false);
   const [showModalSubscription, setShowModalSubscription] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [showAITextarea, setShowAITextarea] = useState(false);
 
   const reactFlowInstance = useReactFlow(); // Hook para pegar as dimensões da tela
 
@@ -47,6 +58,158 @@ export default function FlowApp() {
 
     fetchNodes()
   }, [userUID]);
+
+
+  const handleNodesChange = (changes) => {
+    console.log('here')
+
+    onNodesChange(changes); // 🔥 Mantém o comportamento original do React Flow
+
+    setNodes(prevNodes =>
+      prevNodes.map(node => {
+        // 🔥 Verifica se o node está selecionado atualmente ou foi alterado pelo evento
+        const isSelected = changes.some(change => change.id === node.id ? change.selected ?? node.selected : node.selected);
+
+        return {
+          ...node,
+          selected: isSelected, // 🔥 Mantém a seleção ao adicionar novos nodes
+          style: {
+            ...node.style,
+            border: isSelected ? "3px solid #3C153F" : (node.style?.border as string)?.includes('solid red') ? node.style.border : "none", 
+            borderRadius: isSelected ? "8px" : "0px",
+          }
+        };
+      })
+    );
+  };
+
+  async function generateFlow() {
+    if (!prompt.trim()) {
+      showToast("Digite um prompt!", "warning");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.NEXT_PUBLIC_GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-r1-distill-llama-70b",
+          temperature: 0.6,
+          max_completion_tokens: 4096,
+          top_p: 0.95,
+          stream: false,
+          stop: null,
+          messages: [
+            {
+              role: "system",
+              content: `Você é um assistente especializado em modelar fluxos de processos de software. 
+                        Um fluxo representa uma ação ou processo, e suas dependências representam conexões entre essas ações.
+  
+                        - Retorne **apenas** um JSON no seguinte formato:
+                        {
+                          "nodes": [
+                            { "id": "1", "data": { "label": "Criar Usuário" }, "position": { "x": 50, "y": 100 } },
+                            { "id": "2", "data": { "label": "Enviar E-mail de Boas-Vindas" }, "position": { "x": 50, "y": 300 } }
+                          ],
+                          "edges": [
+                            { "id": "e1-2", "source": "1", "target": "2" }
+                          ]
+                        }
+  
+                        - Não inclua explicações, raciocínio ou qualquer outro texto antes ou depois do JSON.
+                        - Certifique-se de que os IDs dos nós e conexões sejam únicos e que a estrutura JSON seja válida.`
+            },
+            {
+              role: "user",
+              content: prompt
+            }
+          ]
+        })
+      });
+
+      const data = await response.json();
+      let responseText = data?.choices?.[0]?.message?.content || "";
+
+      // 🔥 Filtrando apenas o JSON da resposta
+      const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
+      if (jsonMatch && jsonMatch[1]) {
+        responseText = jsonMatch[1]; // Pegamos apenas o JSON
+      }
+
+      try {
+        const generatedData = JSON.parse(responseText);
+
+        const idMap = new Map(); // Mapeia os IDs antigos para os novos
+        const uniqueNodes = generatedData.nodes.map(node => {
+          const newId = uuidv4();
+          idMap.set(node.id, newId); // Mapeia o ID antigo para o novo
+          return { ...node, id: newId };
+        });
+
+        const uniqueEdges = generatedData.edges
+          .map(edge => {
+            const newSource = idMap.get(edge.source);
+            const newTarget = idMap.get(edge.target);
+
+            if (!newSource || !newTarget) {
+              console.warn(`⚠️ Edge ignorado: ${edge.source} -> ${edge.target} (nó não encontrado)`);
+              return null;
+            }
+
+            return {
+              id: `${newSource}-${newTarget}`,
+              source: newSource,
+              target: newTarget,
+            };
+          })
+          .filter(Boolean);
+
+        setNodes(prevNodes => [...prevNodes, ...uniqueNodes]);
+        setEdges(prevEdges => [...prevEdges, ...uniqueEdges]);
+
+        showToast("Fluxo gerado com sucesso!", "success");
+
+        // 🔥 SALVANDO NO FIREBASE COM OS IDs CORRETOS 🔥
+        const nodesRef = ref(realtimeDb, `flows/${userUID}`);
+        const edgesRef = ref(realtimeDb, `connections/${userUID}`);
+
+        const nodesSnapshot = await get(nodesRef);
+        const edgesSnapshot = await get(edgesRef);
+
+        const existingNodes: any = nodesSnapshot.exists() ? nodesSnapshot.val() : {};
+        const existingEdges: any = edgesSnapshot.exists() ? edgesSnapshot.val() : {};
+
+        // 📌 Adiciona cada nó diretamente no Firebase com seu ID único
+        for (const node of uniqueNodes) {
+          const nodeRef = ref(realtimeDb, `flows/${userUID}/${node.id}`);
+          await set(nodeRef, node);
+        }
+
+        // 📌 Adiciona cada conexão diretamente no Firebase
+        for (const edge of uniqueEdges) {
+          const connectionRef = ref(realtimeDb, `connections/${userUID}/${edge.source}-${edge.target}`);
+          await set(connectionRef, edge);
+        }
+
+      } catch (jsonError) {
+        console.error("❌ Erro ao processar JSON:", jsonError);
+        showToast("Erro ao interpretar resposta da IA.", "error");
+      } finally {
+        setLoading(false);
+      }
+    } catch (error) {
+      console.error("❌ Erro ao gerar fluxo:", error);
+      showToast("Erro ao processar IA", "error");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function fetchNodes() {
     const nodesRef = ref(realtimeDb, `flows/${userUID}`);
@@ -92,12 +255,10 @@ export default function FlowApp() {
   const onNodeClick = (event: any, node: Node) => {
     const edgesImpacted = edges.filter(edge => edge.source == node.id)
 
-    const nodesImpacted = edgesImpacted.map(ed => nodes.find(node => node.id == ed.target))
-
     setSelectedNode(node.id);
-    if (nodesImpacted.length == 0) return setShowEmptyEdges(true)
 
-    setShowEmptyEdges(false)
+    const nodesImpacted = edgesImpacted.map(ed => nodes.find(node => node.id == ed.target))
+    setShowEmptyEdges(nodesImpacted.length == 0)
   };
 
   const onNodeChange = (id, label) => {
@@ -140,7 +301,11 @@ export default function FlowApp() {
         style: { border: "2px solid red" },
       }));
 
+      console.log(nodesImpactedArray)
+
       const nodesNoImpacted = nodes.filter(node => !nodesImpacted.has(node.id));
+
+      console.log(nodesNoImpacted)
 
       setNodes([...nodesNoImpacted, ...nodesImpactedArray]);
     }
@@ -148,10 +313,11 @@ export default function FlowApp() {
 
   function clearImpact() {
     fetchNodes()
+    setSelectedNode('')
   }
 
-  // 📌 Atualiza a posição do node ao mover
   const onNodeDragStop = (event, node) => {
+
     impactService.updateFlow(node, userUID);
   };
 
@@ -173,7 +339,7 @@ export default function FlowApp() {
     const centerY = (window.innerHeight / 2 - y) / zoom;
 
     const newNode = {
-      id: `${nodes.length + 1}`,
+      id: uuidv4(),
       type: "custom",
       position: { x: centerX, y: centerY },
       data: { label: `Novo fluxo ${nodes.length + 1}` },
@@ -197,31 +363,37 @@ export default function FlowApp() {
     impactService.removeFlow(userUID, node[0].id)
     setSelectedNode('')
   }
+
+  console.log(nodes)
+
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
-      <button
-        onClick={createNewNode}
-        className="px-4 py-2 bg-blue-500 text-white rounded absolute top-4 left-4 z-10"
-      >
-        Criar Novo Node
-      </button>
-
       <ReactFlow
         nodes={nodes} edges={edges}
-        onNodesChange={onNodesChange}
+        onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodesDelete={onNodeDelete}
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
+        onPaneClick={() => {
+          setSelectedNode('');
+          setShowAITextarea(false)
+        }}
         fitView
         className="bg-zinc-900"
         defaultEdgeOptions={{
           markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 }
         }}
         nodeTypes={nodeTypes}
+        selectionMode={SelectionMode.Partial}
+        multiSelectionKeyCode="Shift" // 🔥 Usa Shift para seleção múltipla
+        nodesDraggable
+        nodesConnectable
+        snapToGrid // 🔥 Mantém alinhado os nodes ao arrastar
       >
         <Controls />
+        {/* <MiniMap /> */}
       </ReactFlow>
 
       {selectedNode && (
@@ -258,6 +430,49 @@ export default function FlowApp() {
       }
 
       {showModalSubscription && <PricingModal userUID={userUID} onClose={() => setShowModalSubscription(false)} />}
+
+      {showAITextarea &&
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex gap-2 items-center">
+          <textarea
+            placeholder="Descreva seu fluxo..."
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            className="px-4 py-2 border rounded w-96 text-black"
+          />
+          <button onClick={generateFlow} className="px-4 py-2 bg-[#3C153F] h-16 text-white rounded transition-all hover:scale-105">
+            {loading ? "Gerando..." : "Gerar Fluxo"}
+          </button>
+        </div>
+      }
+
+      <div className="absolute right-4 top-1/4 flex flex-col gap-4 bg-zinc-900 p-4 rounded-lg shadow-lg">
+        {/* Criar Novo Node */}
+        <button
+          onClick={createNewNode}
+          className="p-3 rounded-full transition-all hover:scale-110 bg-[#3C153F] text-white shadow-lg shadow-[#3C153F] flex items-center justify-center"
+          title="Criar Novo Node"
+        >
+          <CreateNewFolderOutlinedIcon />
+        </button>
+
+        {/* Criar Novo Grupo */}
+        {/* <button
+          onClick={createNewGroup}
+          className="p-3 rounded-full transition-all hover:scale-110 bg-purple-600 text-white shadow-lg flex items-center justify-center"
+          title="Criar Novo Grupo"
+        >
+          <FolderSpecialOutlinedIcon />
+        </button> */}
+
+        {/* Abrir Textarea para IA */}
+        <button
+          onClick={() => setShowAITextarea(!showAITextarea)}
+          className="p-3 rounded-full transition-all hover:scale-110 bg-blue-600 text-white shadow-lg flex items-center justify-center"
+          title="Abrir IA"
+        >
+          <AutoAwesomeOutlinedIcon />
+        </button>
+      </div>
     </div>
   );
 }
