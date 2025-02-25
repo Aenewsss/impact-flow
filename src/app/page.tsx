@@ -36,6 +36,7 @@ export default function FlowApp() {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [showAITextarea, setShowAITextarea] = useState(false);
+  const [countNodes, setCountNodes] = useState(0);
 
   const reactFlowInstance = useReactFlow(); // Hook para pegar as dimensões da tela
 
@@ -73,7 +74,7 @@ export default function FlowApp() {
           selected: isSelected, // 🔥 Mantém a seleção ao adicionar novos nodes
           style: {
             ...node.style,
-            border: isSelected ? "3px solid #3C153F" : (node.style?.border as string)?.includes('solid red') ? node.style.border : "none", 
+            border: isSelected ? "3px solid #3C153F" : (node.style?.border as string)?.includes('solid red') ? node.style.border : "none",
             borderRadius: isSelected ? "8px" : "0px",
           }
         };
@@ -360,96 +361,96 @@ export default function FlowApp() {
 
 
   return (
-    <div style={{ width: "100vw", height: "100vh" }}>
-      <ReactFlow
-        nodes={nodes} edges={edges}
-        onNodesChange={handleNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onNodesDelete={onNodeDelete}
-        onNodeDragStop={onNodeDragStop}
-        onNodeClick={onNodeClick}
-        onPaneClick={() => {
-          setSelectedNode('');
-          setShowAITextarea(false)
-        }}
-        fitView
-        className="bg-zinc-900"
-        defaultEdgeOptions={{
-          markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 }
-        }}
-        nodeTypes={nodeTypes}
-        selectionMode={SelectionMode.Partial}
-        multiSelectionKeyCode="Shift" // 🔥 Usa Shift para seleção múltipla
-        nodesDraggable
-        nodesConnectable
-        snapToGrid // 🔥 Mantém alinhado os nodes ao arrastar
-      >
-        <Controls />
-        {/* <MiniMap /> */}
-      </ReactFlow>
-
-      {selectedNode && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 20,
-            right: 20,
-            background: "white",
-            padding: 10,
-            borderRadius: 5,
+      <div style={{ width: "100vw", height: "100vh" }}>
+        <ReactFlow
+          nodes={nodes} edges={edges}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodesDelete={onNodeDelete}
+          onNodeDragStop={onNodeDragStop}
+          onNodeClick={onNodeClick}
+          onPaneClick={() => {
+            setSelectedNode('');
+            setShowAITextarea(false)
           }}
-          className="text-black flex flex-col gap-5"
+          fitView
+          className="bg-zinc-900"
+          defaultEdgeOptions={{
+            markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 }
+          }}
+          nodeTypes={nodeTypes}
+          selectionMode={SelectionMode.Partial}
+          multiSelectionKeyCode="Shift" // 🔥 Usa Shift para seleção múltipla
+          nodesDraggable
+          nodesConnectable
+          snapToGrid // 🔥 Mantém alinhado os nodes ao arrastar
         >
-          <div className="flex gap-2">
-            <label>Editar Nome:</label>
-            <input
-              className="ms-2 outline-none font-semibold"
-              type="text"
-              value={nodes.find((n) => n.id === selectedNode)?.data?.label || ""}
-              onChange={(e) => onNodeChange(selectedNode, e.target.value)}
+          <Controls />
+          {/* <MiniMap /> */}
+        </ReactFlow>
 
-            />
+        {selectedNode && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: 20,
+              right: 20,
+              background: "white",
+              padding: 10,
+              borderRadius: 5,
+            }}
+            className="text-black flex flex-col gap-5"
+          >
+            <div className="flex gap-2">
+              <label>Editar Nome:</label>
+              <input
+                className="ms-2 outline-none font-semibold"
+                type="text"
+                value={nodes.find((n) => n.id === selectedNode)?.data?.label || ""}
+                onChange={(e) => onNodeChange(selectedNode, e.target.value)}
+
+              />
+            </div>
+            <button disabled={showEmptyEdges} style={{ background: showEmptyEdges && 'gray' }} onClick={() => viewImpact(null, null)} className="px-4 py-2 bg-blue-500 text-white rounded top-4 left-4 z-10">
+              {showEmptyEdges ? 'Nenhum fluxo conectado' : 'Visualizar impacto'}
+            </button>
           </div>
-          <button disabled={showEmptyEdges} style={{ background: showEmptyEdges && 'gray' }} onClick={() => viewImpact(null, null)} className="px-4 py-2 bg-blue-500 text-white rounded top-4 left-4 z-10">
-            {showEmptyEdges ? 'Nenhum fluxo conectado' : 'Visualizar impacto'}
+        )}
+
+        {
+          nodes.some(node => JSON.stringify(node.style)?.includes('2px solid red')) &&
+          <button onClick={clearImpact} className="p-2 rounded bg-red-500 absolute top-4 right-4">Limpar</button>
+        }
+
+        {showModalSubscription && <PricingModal userUID={userUID} onClose={() => setShowModalSubscription(false)} />}
+
+        {showAITextarea &&
+          <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex gap-2 items-center">
+            <textarea
+              placeholder="Descreva seu fluxo..."
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              className="px-4 py-2 border rounded w-96 text-black"
+            />
+            <button onClick={generateFlow} className="px-4 py-2 bg-[#3C153F] h-16 text-white rounded transition-all hover:scale-105">
+              {loading ? "Gerando..." : "Gerar Fluxo"}
+            </button>
+          </div>
+        }
+
+        <div className="absolute right-4 top-1/4 flex flex-col gap-4 bg-zinc-900 p-4 rounded-lg shadow-lg">
+          {/* Criar Novo Node */}
+          <button
+            onClick={createNewNode}
+            className="p-3 rounded-full transition-all hover:scale-110 bg-[#3C153F] text-white shadow-lg shadow-[#3C153F] flex items-center justify-center"
+            title="Criar Novo Node"
+          >
+            <CreateNewFolderOutlinedIcon />
           </button>
-        </div>
-      )}
 
-      {
-        nodes.some(node => JSON.stringify(node.style)?.includes('2px solid red')) &&
-        <button onClick={clearImpact} className="p-2 rounded bg-red-500 absolute top-4 right-4">Limpar</button>
-      }
-
-      {showModalSubscription && <PricingModal userUID={userUID} onClose={() => setShowModalSubscription(false)} />}
-
-      {showAITextarea &&
-        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex gap-2 items-center">
-          <textarea
-            placeholder="Descreva seu fluxo..."
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            className="px-4 py-2 border rounded w-96 text-black"
-          />
-          <button onClick={generateFlow} className="px-4 py-2 bg-[#3C153F] h-16 text-white rounded transition-all hover:scale-105">
-            {loading ? "Gerando..." : "Gerar Fluxo"}
-          </button>
-        </div>
-      }
-
-      <div className="absolute right-4 top-1/4 flex flex-col gap-4 bg-zinc-900 p-4 rounded-lg shadow-lg">
-        {/* Criar Novo Node */}
-        <button
-          onClick={createNewNode}
-          className="p-3 rounded-full transition-all hover:scale-110 bg-[#3C153F] text-white shadow-lg shadow-[#3C153F] flex items-center justify-center"
-          title="Criar Novo Node"
-        >
-          <CreateNewFolderOutlinedIcon />
-        </button>
-
-        {/* Criar Novo Grupo */}
-        {/* <button
+          {/* Criar Novo Grupo */}
+          {/* <button
           onClick={createNewGroup}
           className="p-3 rounded-full transition-all hover:scale-110 bg-purple-600 text-white shadow-lg flex items-center justify-center"
           title="Criar Novo Grupo"
@@ -457,15 +458,15 @@ export default function FlowApp() {
           <FolderSpecialOutlinedIcon />
         </button> */}
 
-        {/* Abrir Textarea para IA */}
-        <button
-          onClick={() => setShowAITextarea(!showAITextarea)}
-          className="p-3 rounded-full transition-all hover:scale-110 bg-blue-600 text-white shadow-lg flex items-center justify-center"
-          title="Abrir IA"
-        >
-          <AutoAwesomeOutlinedIcon />
-        </button>
+          {/* Abrir Textarea para IA */}
+          <button
+            onClick={() => setShowAITextarea(!showAITextarea)}
+            className="p-3 rounded-full transition-all hover:scale-110 bg-blue-600 text-white shadow-lg flex items-center justify-center"
+            title="Abrir IA"
+          >
+            <AutoAwesomeOutlinedIcon />
+          </button>
+        </div>
       </div>
-    </div>
   );
 }
