@@ -219,6 +219,7 @@ export default function FlowApp() {
         ...node,
         position: node.position || { x: 0, y: 0 },
       }));
+      console.log(nodesData)
       setNodes(nodesData);
     }
 
@@ -386,7 +387,7 @@ export default function FlowApp() {
         snapToGrid // 🔥 Mantém alinhado os nodes ao arrastar
       >
         <Controls />
-        {/* <MiniMap /> */}
+        <MiniMap />
       </ReactFlow>
 
       {selectedNode && (

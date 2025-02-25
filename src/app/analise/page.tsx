@@ -1,29 +1,45 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ref, set } from "firebase/database";
-import { realtimeDb } from "@/config/firebase"; // Firebase
+import { auth, realtimeDb } from "@/config/firebase"; // Firebase
 import { v4 as uuidv4 } from "uuid";
+import { onAuthStateChanged } from "firebase/auth";
+import { useRouter } from "next/navigation";
 
 // Expressões Regulares
 const FUNCTION_REGEX = /(export\s+default\s+function|export\s+function|const|async function|function)\s+([a-zA-Z0-9_]+)\s*\(/g;
 const IMPORT_REGEX = /import\s+(?:\*\s+as\s+([a-zA-Z0-9_]+)|\{([^}]+)\}|([a-zA-Z0-9_]+))\s+from\s+['"](.+?)['"]/g;
+const FUNCTION_CALL_REGEX = /([a-zA-Z0-9_]+)\s*\(/g;
+const INTERFACE_REGEX = /interface\s+([a-zA-Z0-9_]+)/g;
+const VARIABLE_REGEX = /const\s+([a-zA-Z0-9_]+)/g;
 
 // Ignorar arquivos irrelevantes
-const IGNORED_FILES = [".env", "package.json", "package-lock.json", "yarn.lock", "tsconfig.json"];
 const IGNORED_FOLDERS = ["node_modules", ".git", ".next", "dist", "build"];
 
 export default function FunctionExtractor() {
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
+  const [userUID, setUserUID] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user && user.uid) {
+        setUserUID(user.uid);
+      } else {
+        router.push("/login");
+        setUserUID(null);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   async function handleFolderSelection() {
     try {
       setLoading(true);
-
-      // 🔥 Abre o seletor de arquivos
       // @ts-ignore
       const directoryHandle = await window.showDirectoryPicker();
-      let functionData = [];
       let functionImports = [];
 
       async function processDirectory(directoryHandle, relativePath = "") {
@@ -42,26 +58,37 @@ export default function FunctionExtractor() {
       }
 
       function processFile(content, fileName, filePath) {
-        let functionsInFile = [];
+        let fileData = { fileName, path: filePath, functions: [], imports: [], dependencies: [] };
         let match;
 
-        // 🔍 Encontrar funções no arquivo
+        // 🔍 Identificar funções no arquivo
         while ((match = FUNCTION_REGEX.exec(content)) !== null) {
-          const functionName = match[2];
-          functionsInFile.push({ name: functionName, startIndex: match.index });
-          functionData.push({
-            id: uuidv4(),
-            name: functionName,
-            file: fileName,
-            path: filePath,
-          });
+          fileData.functions.push({ name: match[2], startIndex: match.index });
         }
 
-        // 🔍 Encontrar imports e associar com funções reais que os chamam
+        // 🔍 Identificar interfaces no arquivo
+        while ((match = INTERFACE_REGEX.exec(content)) !== null) {
+          fileData.functions.push({ name: match[1], type: "interface", startIndex: match.index });
+        }
+
+        // 🔍 Identificar variáveis no arquivo
+        while ((match = VARIABLE_REGEX.exec(content)) !== null) {
+          fileData.functions.push({ name: match[1], type: "variable", startIndex: match.index });
+        }
+
+        // 🔍 Identificar chamadas internas de funções no mesmo arquivo
+        while ((match = FUNCTION_CALL_REGEX.exec(content)) !== null) {
+          const calledFunction = match[1];
+          if (fileData.functions.some(fn => fn.name === calledFunction)) {
+            fileData.dependencies.push({ caller: calledFunction });
+          }
+        }
+
+        // 🔍 Identificar imports
         while ((match = IMPORT_REGEX.exec(content)) !== null) {
           const importedFrom = match[4];
 
-          // 🔥 Apenas imports internos do projeto (./, ../, @/)
+          // Apenas imports internos
           if (!importedFrom.startsWith(".") && !importedFrom.startsWith("@/")) continue;
 
           let importedItems = [];
@@ -69,37 +96,19 @@ export default function FunctionExtractor() {
           if (match[2]) importedItems.push(...match[2].split(",").map(item => item.trim()));
           if (match[3]) importedItems.push(match[3]);
 
-          let usedInFunction = "Global Scope";
-
-          // 🔍 Identificar em qual função a importação é usada
-          for (const fn of functionsInFile) {
-            const fnEndIndex = functionsInFile.find(f => f.startIndex > fn.startIndex)?.startIndex || content.length;
-            const fnContent = content.slice(fn.startIndex, fnEndIndex);
-
-            // Se encontrar referência ao import dentro do corpo da função, associa corretamente
-            if (importedItems.some(item => fnContent.includes(`${item}.`))) {
-              usedInFunction = fn.name;
-              break;
-            }
-          }
-
-          functionImports.push({
-            file: fileName,
-            importedFrom,
-            importedItems,
-            usedInFunction,
-          });
+          fileData.imports.push({ importedFrom, importedItems });
         }
+
+        functionImports.push(fileData);
       }
 
       await processDirectory(directoryHandle);
+      console.log("📌 Funções e dependências identificadas:", functionImports);
 
-      // 🔥 Salva no Firebase
-      await set(ref(realtimeDb, "functions"), functionData);
-      await set(ref(realtimeDb, "functionImports"), functionImports);
+      // 🔥 Criar os fluxos no ImpactFlow
+      await createImpactFlow(userUID, functionImports);
 
-      console.log("📌 Funções e importações salvas no Firebase.");
-      setResult({ functions: functionData.length, imports: functionImports.length });
+      setResult({ functions: functionImports.length });
     } catch (error) {
       console.error("Erro ao processar pasta:", error);
     } finally {
@@ -107,26 +116,88 @@ export default function FunctionExtractor() {
     }
   }
 
+  async function createImpactFlow(userUID, functionImports) {
+    if (!userUID || !functionImports.length) return;
+
+    const nodeSpacingX = 250;
+    const nodeSpacingY = 150;
+    let nodesMap = new Map();
+    let col = 0, row = 0;
+
+    for (const file of functionImports) {
+      console.log("🔍 Processando arquivo:", file.fileName);
+
+      // 🔥 Criar nó do arquivo
+      const fileNodeId = uuidv4();
+      await set(ref(realtimeDb, `flows/${userUID}/${fileNodeId}`), {
+        id: fileNodeId,
+        data: { label: file.fileName },
+        position: { x: col * nodeSpacingX, y: row * nodeSpacingY },
+        type: "custom",
+      });
+      nodesMap.set(file.path, fileNodeId);
+
+      col++;
+      if (col > 5) {
+        col = 0;
+        row++;
+      }
+
+      // 🔥 Criar nós das funções dentro do arquivo
+      for (const func of file.functions) {
+        console.log("🔗 Criando fluxo para função:", func.name);
+
+        const functionNodeId = uuidv4();
+        await set(ref(realtimeDb, `flows/${userUID}/${functionNodeId}`), {
+          id: functionNodeId,
+          data: { label: func.name },
+          position: { x: col * nodeSpacingX, y: row * nodeSpacingY },
+          type: "custom",
+        });
+        nodesMap.set(`${file.path}-${func.name}`, functionNodeId);
+
+        // Criar conexão entre o arquivo e a função
+        await set(ref(realtimeDb, `connections/${userUID}/${uuidv4()}`), {
+          id: uuidv4(),
+          source: fileNodeId,
+          target: functionNodeId,
+        });
+
+        col++;
+        if (col > 5) {
+          col = 0;
+          row++;
+        }
+      }
+
+      // 🔥 Criar conexões de dependências dentro do mesmo arquivo
+      for (const dep of file.dependencies) {
+        const callingNodeId = nodesMap.get(`${file.path}-${dep.caller}`);
+        if (!callingNodeId) continue;
+
+        for (const func of file.functions) {
+          if (func.name === dep.caller) continue;
+
+          await set(ref(realtimeDb, `connections/${userUID}/${uuidv4()}`), {
+            id: uuidv4(),
+            source: callingNodeId,
+            target: nodesMap.get(`${file.path}-${func.name}`),
+          });
+
+          console.log(`✅ Criada dependência: ${dep.caller} → ${func.name}`);
+        }
+      }
+    }
+
+    console.log("📌 Fluxo de dependências criado no ImpactFlow!");
+  }
+
   return (
     <div className="p-6">
       <h1 className="text-xl font-bold">📂 Analisar Código</h1>
-      <p className="text-gray-500">Selecione uma pasta do projeto para extrair as funções.</p>
-      <button
-        onClick={handleFolderSelection}
-        className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-      >
+      <button onClick={handleFolderSelection} className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg">
         Selecionar Pasta
       </button>
-
-      {loading && <p className="mt-4 text-yellow-500">⏳ Processando...</p>}
-
-      {result && (
-        <div className="mt-4">
-          <p className="text-green-500">✅ Extração concluída!</p>
-          <p>Funções salvas: {result.functions}</p>
-          <p>Importações mapeadas: {result.imports}</p>
-        </div>
-      )}
     </div>
   );
 }
