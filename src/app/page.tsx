@@ -319,7 +319,7 @@ export default function FlowApp() {
   // 📌 Função para criar um novo node no centro da tela
   const createNewNode = async () => {
 
-    if (await userService.getUserPlan(userUID) == PlanEnum.FREE && nodes.length == 10) {
+    if (await userService.getUserPlan(userUID) == PlanEnum.FREE && nodes.length >= 10) {
       showToast("Você atingiu o limite do plano gratuito", 'warning');
       return setShowModalSubscription(true)
     }
