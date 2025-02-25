@@ -45,6 +45,7 @@ export default function FlowApp() {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [showAITextarea, setShowAITextarea] = useState(false);
+  const [countNodes, setCountNodes] = useState(0);
 
   const reactFlowInstance = useReactFlow(); // Hook para pegar as dimensões da tela
 
@@ -356,7 +357,7 @@ export default function FlowApp() {
   // 📌 Função para criar um novo node no centro da tela
   const createNewNode = async () => {
 
-    if (await userService.getUserPlan(userUID) == PlanEnum.FREE && nodes.length == 10) {
+    if (await userService.getUserPlan(userUID) == PlanEnum.FREE && nodes.length >= 10) {
       showToast("Você atingiu o limite do plano gratuito", 'warning');
       return setShowModalSubscription(true)
     }
@@ -649,6 +650,28 @@ export default function FlowApp() {
           </button>
         </div>
       }
+
+      {
+        nodes.some(node => JSON.stringify(node.style)?.includes('2px solid red')) &&
+        <button onClick={clearImpact} className="p-2 rounded bg-red-500 absolute top-4 right-4">Limpar</button>
+      }
+
+      {showModalSubscription && <PricingModal userUID={userUID} onClose={() => setShowModalSubscription(false)} />}
+
+      {
+        showAITextarea &&
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex gap-2 items-center">
+          <textarea
+            placeholder="Descreva seu fluxo..."
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            className="px-4 py-2 border rounded w-96 text-black"
+          />
+          <button onClick={generateFlow} className="px-4 py-2 bg-[#3C153F] h-16 text-white rounded transition-all hover:scale-105">
+            {loading ? "Gerando..." : "Gerar Fluxo"}
+          </button>
+        </div>
+      }
       <div className="absolute right-4 top-1/4 flex flex-col gap-4 bg-zinc-900 p-4 rounded-lg shadow-lg">
         <Tooltip text="Criar novo nó">
           <button
@@ -682,11 +705,13 @@ export default function FlowApp() {
 
       </div>
 
-      {loading && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
-          <div className="w-16 h-16 border-t-4 border-blue-500 border-solid rounded-full animate-spin"></div>
-        </div>
-      )}
-    </div>
+      {
+        loading && (
+          <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+            <div className="w-16 h-16 border-t-4 border-blue-500 border-solid rounded-full animate-spin"></div>
+          </div>
+        )
+      }
+    </div >
   );
 }
