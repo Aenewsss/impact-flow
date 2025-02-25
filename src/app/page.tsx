@@ -16,8 +16,17 @@ import PricingModal from "@/components/PricingModal";
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import CreateNewFolderOutlinedIcon from '@mui/icons-material/CreateNewFolderOutlined';
 import FolderSpecialOutlinedIcon from '@mui/icons-material/FolderSpecialOutlined';
+import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import { v4 as uuidv4 } from "uuid"; // 📌 Importar biblioteca para gerar IDs únicos
 import CustomGroup from "@/components/GroupNode";
+import Tooltip from "@/components/Tooltip";
+
+// Expressões Regulares
+const FUNCTION_REGEX = /(export\s+default\s+function|export\s+function|const|async function|function|class)\s+([a-zA-Z0-9_]+)\s*\(/g;
+const IMPORT_REGEX = /import\s+(?:\*\s+as\s+([a-zA-Z0-9_]+)|\{([^}]+)\}|([a-zA-Z0-9_]+))\s+from\s+['"](.+?)['"]/g;
+
+// Ignorar pastas irrelevantes
+const IGNORED_FOLDERS = ["node_modules", ".git", ".next", "dist", "build"];
 
 const nodeTypes = {
   custom: CustomNode,
@@ -145,10 +154,38 @@ export default function FlowApp() {
         const generatedData = JSON.parse(responseText);
 
         const idMap = new Map(); // Mapeia os IDs antigos para os novos
+
+        const existingNodes = new Set(nodes.map(node => `${node.position.x}-${node.position.y}`));
+
+        const step = 250; // Distância mínima entre nós
+        let firstNodePosition = null;
+
+        // 🔥 Função auxiliar para verificar se há sobreposição
+        const isPositionOccupied = (x, y) => {
+          return [...nodes].some(node =>
+            Math.abs(node.position.x - x) < step && Math.abs(node.position.y - y) < step
+          );
+        };
+
         const uniqueNodes = generatedData.nodes.map(node => {
-          const newId = uuidv4();
-          idMap.set(node.id, newId); // Mapeia o ID antigo para o novo
-          return { ...node, id: newId };
+          let newId = uuidv4();
+          let newX = node.position.x;
+          let newY = node.position.y;
+
+          // 📌 Evita sobreposição procurando um espaço livre
+          while (isPositionOccupied(newX, newY)) {
+            newX += step; // Move para o lado
+          }
+
+          // 📌 Armazena a posição do primeiro nó para mover a tela depois
+          if (!firstNodePosition) {
+            firstNodePosition = { x: newX, y: newY };
+          }
+
+          existingNodes.add(`${newX}-${newY}`);
+          idMap.set(node.id, newId);
+
+          return { ...node, id: newId, position: { x: newX, y: newY } };
         });
 
         const uniqueEdges = generatedData.edges
@@ -172,17 +209,13 @@ export default function FlowApp() {
         setNodes(prevNodes => [...prevNodes, ...uniqueNodes]);
         setEdges(prevEdges => [...prevEdges, ...uniqueEdges]);
 
+        if (firstNodePosition) {
+          reactFlowInstance.setCenter(firstNodePosition.x, firstNodePosition.y);
+        }
+
         showToast("Fluxo gerado com sucesso!", "success");
 
-        // 🔥 SALVANDO NO FIREBASE COM OS IDs CORRETOS 🔥
-        const nodesRef = ref(realtimeDb, `flows/${userUID}`);
-        const edgesRef = ref(realtimeDb, `connections/${userUID}`);
-
-        const nodesSnapshot = await get(nodesRef);
-        const edgesSnapshot = await get(edgesRef);
-
-        const existingNodes: any = nodesSnapshot.exists() ? nodesSnapshot.val() : {};
-        const existingEdges: any = edgesSnapshot.exists() ? edgesSnapshot.val() : {};
+        setLoading(false);
 
         // 📌 Adiciona cada nó diretamente no Firebase com seu ID único
         for (const node of uniqueNodes) {
@@ -214,24 +247,29 @@ export default function FlowApp() {
     const nodesRef = ref(realtimeDb, `flows/${userUID}`);
     const edgesRef = ref(realtimeDb, `connections/${userUID}`);
 
-    const nodesSnapshot = await get(nodesRef)
-    if (nodesSnapshot.exists()) {
-      const nodesData = Object.values(nodesSnapshot.val()).map((node: any) => ({
-        ...node,
-        position: node.position || { x: 0, y: 0 },
-      }));
-      setNodes(nodesData);
-    }
+    // 📌 Monitorar mudanças nos fluxos em tempo real
+    onValue(nodesRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const nodesData = Object.values(snapshot.val()).map((node: any) => ({
+          ...node,
+          position: node.position || { x: 0, y: 0 },
+        }));
+        console.log("📌 Nodes Atualizados:", nodesData);
+        setNodes(nodesData);
+      }
+    });
 
-
-    const edgesSnapshot = await get(edgesRef)
-    if (edgesSnapshot.exists()) {
-      const edgesData = Object.values(edgesSnapshot.val()).map((node: any) => ({
-        ...node,
-        position: node.position || { x: 0, y: 0 },
-      }));
-      setEdges(edgesData);
-    }
+    // 📌 Monitorar mudanças nas conexões em tempo real
+    onValue(edgesRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const edgesData = Object.values(snapshot.val()).map((edge: any) => ({
+          ...edge,
+          position: edge.position || { x: 0, y: 0 },
+        }));
+        console.log("📌 Conexões Atualizadas:", edgesData);
+        setEdges(edgesData);
+      }
+    });
   }
 
   const onConnect = useCallback(
@@ -359,88 +397,283 @@ export default function FlowApp() {
     setSelectedNode('')
   }
 
+  async function handleFolderSelection() {
+    try {
+      // setLoading(true);
+
+      // 🔥 Abre o seletor de arquivos
+      // @ts-ignore
+      const directoryHandle = await window.showDirectoryPicker();
+      let functionMap = new Map(); // Armazena todas as funções e onde elas estão definidas
+      let dependencies = []; // Armazena todas as dependências entre funções
+
+      async function processDirectory(directoryHandle, relativePath = "") {
+        for await (const [name, handle] of directoryHandle.entries()) {
+          if (IGNORED_FOLDERS.includes(name)) continue;
+          const fullPath = relativePath ? `${relativePath}/${name}` : name;
+
+          if (handle.kind === "directory") {
+            await processDirectory(handle, fullPath);
+          } else if (handle.kind === "file" && (name.endsWith(".js") || name.endsWith(".ts") || name.endsWith(".tsx"))) {
+            const file = await handle.getFile();
+            const content = await file.text();
+            processFile(content, name, fullPath);
+          }
+        }
+      }
+
+      function processFile(content, fileName, filePath) {
+        let functionsInFile = [];
+        let importsInFile = [];
+        let match;
+
+        // 🔍 Encontrar funções no arquivo
+        while ((match = FUNCTION_REGEX.exec(content)) !== null) {
+          const functionName = match[2];
+          functionsInFile.push(functionName);
+
+          functionMap.set(functionName, { file: fileName, path: filePath });
+        }
+
+        // 🔍 Encontrar imports no arquivo
+        while ((match = IMPORT_REGEX.exec(content)) !== null) {
+          const importedFrom = match[4];
+
+          // 🔥 Apenas imports internos do projeto (./, ../, @/)
+          if (!importedFrom.startsWith(".") && !importedFrom.startsWith("@/")) continue;
+
+          let importedItems = [];
+          if (match[1]) importedItems.push(`* as ${match[1]}`);
+          if (match[2]) importedItems.push(...match[2].split(",").map(item => item.trim()));
+          if (match[3]) importedItems.push(match[3]);
+
+          importsInFile.push({ importedFrom, importedItems });
+        }
+
+        // 🔍 Encontrar chamadas de funções dentro do código
+        functionsInFile.forEach((fnName) => {
+          const functionBodyStart = content.indexOf(fnName + "(");
+          if (functionBodyStart !== -1) {
+            const functionBody = content.slice(functionBodyStart);
+
+            for (const [otherFn, location] of functionMap.entries()) {
+              if (functionBody.includes(otherFn + "(") && otherFn !== fnName) {
+                dependencies.push({
+                  source: otherFn,
+                  target: fnName,
+                  type: "internal",
+                  file: fileName,
+                });
+              }
+            }
+          }
+        });
+
+        // 🔍 Mapear funções que dependem de imports
+        importsInFile.forEach(({ importedFrom, importedItems }) => {
+          functionsInFile.forEach((fnName) => {
+            importedItems.forEach((impItem) => {
+              if (content.includes(impItem + "(")) {
+                dependencies.push({
+                  source: impItem,
+                  target: fnName,
+                  type: "import",
+                  file: fileName,
+                  importedFrom,
+                });
+              }
+            });
+          });
+        });
+      }
+
+      await processDirectory(directoryHandle);
+
+      // 🔥 Agora cria os fluxos no ImpactFlow
+      await createImpactFlow(userUID, functionMap, dependencies);
+    } catch (error) {
+      console.error("Erro ao processar pasta:", error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createImpactFlow(userUID, functionMap, dependencies) {
+    if (!userUID || functionMap.size === 0) return;
+
+    let nodesMap = new Map();
+
+    const nodeSpacingX = 250; // Espaçamento horizontal entre os nós
+    const nodeSpacingY = 150; // Espaçamento vertical entre os nós
+
+    async function placeNodeSafely(functionId, functionName) {
+      // 🔥 1. Buscar nós existentes no Firebase
+      const nodesSnapshot = await get(ref(realtimeDb, `flows/${userUID}`));
+      let existingPositions = new Set();
+
+      if (nodesSnapshot.exists()) {
+        Object.values(nodesSnapshot.val()).forEach((node: any) => {
+          const positionKey = `${Math.round(node.position.x)},${Math.round(node.position.y)}`;
+          existingPositions.add(positionKey);
+        });
+      }
+
+      let col = 0, row = 0;
+      let newPosition;
+
+      // 🔍 2. Encontrar uma posição livre verificando os nós já existentes
+      while (true) {
+        newPosition = `${col * nodeSpacingX},${row * nodeSpacingY}`;
+
+        if (!existingPositions.has(newPosition)) {
+          existingPositions.add(newPosition); // Marca posição como ocupada
+          break; // Sai do loop se encontrou uma posição livre
+        }
+
+        col++;
+        if (col > 5) { // Ajusta para próxima linha caso atinja limite de colunas
+          col = 0;
+          row++;
+        }
+      }
+
+      // 🔥 3. Criar o nó no Firebase na posição livre
+      const nodeId = uuidv4();
+      await set(ref(realtimeDb, `flows/${userUID}/${nodeId}`), {
+        id: nodeId,
+        data: { label: functionName },
+        position: { x: col * nodeSpacingX, y: row * nodeSpacingY },
+        type: "custom",
+      });
+
+      nodesMap.set(functionId, nodeId);
+    }
+
+    // 🔥 Criar nós para cada função encontrada, garantindo que não haja sobreposição
+    for (const [fnName, location] of functionMap.entries()) {
+      const nodeId = await placeNodeSafely(userUID, fnName); // ⬅️ Agora usamos placeNodeSafely
+      nodesMap.set(fnName, nodeId);
+    }
+
+    // 🔥 Criar conexões entre funções
+    for (const dep of dependencies) {
+      const sourceNodeId = nodesMap.get(dep.source);
+      const targetNodeId = nodesMap.get(dep.target);
+      if (!sourceNodeId || !targetNodeId) continue;
+
+      await set(ref(realtimeDb, `connections/${userUID}/${uuidv4()}`), {
+        id: uuidv4(),
+        source: sourceNodeId,
+        target: targetNodeId,
+      });
+    }
+
+    console.log("📌 Fluxo de dependências criado no ImpactFlow!");
+  }
+
 
   return (
-      <div style={{ width: "100vw", height: "100vh" }}>
-        <ReactFlow
-          nodes={nodes} edges={edges}
-          onNodesChange={handleNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodesDelete={onNodeDelete}
-          onNodeDragStop={onNodeDragStop}
-          onNodeClick={onNodeClick}
-          onPaneClick={() => {
-            setSelectedNode('');
-            setShowAITextarea(false)
+    <div style={{ width: "100vw", height: "100vh" }}>
+      <ReactFlow
+        nodes={nodes} edges={edges}
+        onNodesChange={handleNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        onNodesDelete={onNodeDelete}
+        onNodeDragStop={onNodeDragStop}
+        onNodeClick={onNodeClick}
+        onPaneClick={() => {
+          setSelectedNode('');
+          setShowAITextarea(false)
+        }}
+        fitView
+        className="bg-zinc-900"
+        defaultEdgeOptions={{
+          markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 }
+        }}
+        nodeTypes={nodeTypes}
+        selectionMode={SelectionMode.Partial}
+        multiSelectionKeyCode="Shift" // 🔥 Usa Shift para seleção múltipla
+        nodesDraggable
+        nodesConnectable
+        snapToGrid // 🔥 Mantém alinhado os nodes ao arrastar
+      >
+        <Controls />
+        <MiniMap />
+      </ReactFlow>
+
+      {selectedNode && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 20,
+            right: 20,
+            background: "white",
+            padding: 10,
+            borderRadius: 5,
           }}
-          fitView
-          className="bg-zinc-900"
-          defaultEdgeOptions={{
-            markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 }
-          }}
-          nodeTypes={nodeTypes}
-          selectionMode={SelectionMode.Partial}
-          multiSelectionKeyCode="Shift" // 🔥 Usa Shift para seleção múltipla
-          nodesDraggable
-          nodesConnectable
-          snapToGrid // 🔥 Mantém alinhado os nodes ao arrastar
+          className="text-black flex flex-col gap-5"
         >
-          <Controls />
-          {/* <MiniMap /> */}
-        </ReactFlow>
+          <div className="flex gap-2">
+            <label>Editar Nome:</label>
+            <input
+              className="ms-2 outline-none font-semibold"
+              type="text"
+              value={nodes.find((n) => n.id === selectedNode)?.data?.label || ""}
+              onChange={(e) => onNodeChange(selectedNode, e.target.value)}
 
-        {selectedNode && (
-          <div
-            style={{
-              position: "absolute",
-              bottom: 20,
-              right: 20,
-              background: "white",
-              padding: 10,
-              borderRadius: 5,
-            }}
-            className="text-black flex flex-col gap-5"
-          >
-            <div className="flex gap-2">
-              <label>Editar Nome:</label>
-              <input
-                className="ms-2 outline-none font-semibold"
-                type="text"
-                value={nodes.find((n) => n.id === selectedNode)?.data?.label || ""}
-                onChange={(e) => onNodeChange(selectedNode, e.target.value)}
-
-              />
-            </div>
-            <button disabled={showEmptyEdges} style={{ background: showEmptyEdges && 'gray' }} onClick={() => viewImpact(null, null)} className="px-4 py-2 bg-blue-500 text-white rounded top-4 left-4 z-10">
-              {showEmptyEdges ? 'Nenhum fluxo conectado' : 'Visualizar impacto'}
-            </button>
-          </div>
-        )}
-
-        {
-          nodes.some(node => JSON.stringify(node.style)?.includes('2px solid red')) &&
-          <button onClick={clearImpact} className="p-2 rounded bg-red-500 absolute top-4 right-4">Limpar</button>
-        }
-
-        {showModalSubscription && <PricingModal userUID={userUID} onClose={() => setShowModalSubscription(false)} />}
-
-        {showAITextarea &&
-          <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex gap-2 items-center">
-            <textarea
-              placeholder="Descreva seu fluxo..."
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              className="px-4 py-2 border rounded w-96 text-black"
             />
-            <button onClick={generateFlow} className="px-4 py-2 bg-[#3C153F] h-16 text-white rounded transition-all hover:scale-105">
-              {loading ? "Gerando..." : "Gerar Fluxo"}
-            </button>
           </div>
-        }
+          <button disabled={showEmptyEdges} style={{ background: showEmptyEdges && 'gray' }} onClick={() => viewImpact(null, null)} className="px-4 py-2 bg-blue-500 text-white rounded top-4 left-4 z-10">
+            {showEmptyEdges ? 'Nenhum fluxo conectado' : 'Visualizar impacto'}
+          </button>
+        </div>
+      )}
 
-        <div className="absolute right-4 top-1/4 flex flex-col gap-4 bg-zinc-900 p-4 rounded-lg shadow-lg">
-          {/* Criar Novo Node */}
+      {
+        nodes.some(node => JSON.stringify(node.style)?.includes('2px solid red')) &&
+        <button onClick={clearImpact} className="p-2 rounded bg-red-500 absolute top-4 right-4">Limpar</button>
+      }
+
+      {showModalSubscription && <PricingModal userUID={userUID} onClose={() => setShowModalSubscription(false)} />}
+
+      {showAITextarea &&
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex gap-2 items-center">
+          <textarea
+            placeholder="Descreva seu fluxo..."
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            className="px-4 py-2 border rounded w-96 text-black"
+          />
+          <button onClick={generateFlow} className="px-4 py-2 bg-[#3C153F] h-16 text-white rounded transition-all hover:scale-105">
+            {loading ? "Gerando..." : "Gerar Fluxo"}
+          </button>
+        </div>
+      }
+
+      {
+        nodes.some(node => JSON.stringify(node.style)?.includes('2px solid red')) &&
+        <button onClick={clearImpact} className="p-2 rounded bg-red-500 absolute top-4 right-4">Limpar</button>
+      }
+
+      {showModalSubscription && <PricingModal userUID={userUID} onClose={() => setShowModalSubscription(false)} />}
+
+      {
+        showAITextarea &&
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex gap-2 items-center">
+          <textarea
+            placeholder="Descreva seu fluxo..."
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            className="px-4 py-2 border rounded w-96 text-black"
+          />
+          <button onClick={generateFlow} className="px-4 py-2 bg-[#3C153F] h-16 text-white rounded transition-all hover:scale-105">
+            {loading ? "Gerando..." : "Gerar Fluxo"}
+          </button>
+        </div>
+      }
+      <div className="absolute right-4 top-1/4 flex flex-col gap-4 bg-zinc-900 p-4 rounded-lg shadow-lg">
+        <Tooltip text="Criar novo nó">
           <button
             onClick={createNewNode}
             className="p-3 rounded-full transition-all hover:scale-110 bg-[#3C153F] text-white shadow-lg shadow-[#3C153F] flex items-center justify-center"
@@ -448,17 +681,9 @@ export default function FlowApp() {
           >
             <CreateNewFolderOutlinedIcon />
           </button>
+        </Tooltip>
 
-          {/* Criar Novo Grupo */}
-          {/* <button
-          onClick={createNewGroup}
-          className="p-3 rounded-full transition-all hover:scale-110 bg-purple-600 text-white shadow-lg flex items-center justify-center"
-          title="Criar Novo Grupo"
-        >
-          <FolderSpecialOutlinedIcon />
-        </button> */}
-
-          {/* Abrir Textarea para IA */}
+        <Tooltip text="Criar fluxo com IA">
           <button
             onClick={() => setShowAITextarea(!showAITextarea)}
             className="p-3 rounded-full transition-all hover:scale-110 bg-blue-600 text-white shadow-lg flex items-center justify-center"
@@ -466,7 +691,27 @@ export default function FlowApp() {
           >
             <AutoAwesomeOutlinedIcon />
           </button>
-        </div>
+        </Tooltip>
+
+        <Tooltip text="Importar código">
+          <button
+            onClick={handleFolderSelection}
+            className="p-3 rounded-full transition-all hover:scale-110 bg-green-600 text-white shadow-lg flex items-center justify-center"
+            title="Importar Código"
+          >
+            <UploadFileOutlinedIcon />
+          </button>
+        </Tooltip>
+
       </div>
+
+      {
+        loading && (
+          <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+            <div className="w-16 h-16 border-t-4 border-blue-500 border-solid rounded-full animate-spin"></div>
+          </div>
+        )
+      }
+    </div >
   );
 }
