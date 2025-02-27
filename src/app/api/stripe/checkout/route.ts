@@ -24,6 +24,7 @@ export async function POST(request: NextRequest) {
             customer_email: email,
             line_items: [
                 {
+                    // @ts-ignore
                     price: planPrices[planType],
                     quantity: 1,
                 },
@@ -32,6 +33,7 @@ export async function POST(request: NextRequest) {
             cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/pagamento?success=false`,
             metadata: {
                 userEmail: email,
+                // @ts-ignore
                 chosenPlan: planPrices[planType]
             }
         });

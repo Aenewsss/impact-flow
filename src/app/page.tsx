@@ -27,6 +27,7 @@ const IMPORT_REGEX = /import\s+(?:\*\s+as\s+([a-zA-Z0-9_]+)|\{([^}]+)\}|([a-zA-Z
 
 // Ignorar pastas irrelevantes
 const IGNORED_FOLDERS = ["node_modules", ".git", ".next", "dist", "build"];
+const IGNORED_FILES = ["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "README.md"];
 
 const nodeTypes = {
   custom: CustomNode,
@@ -399,177 +400,160 @@ export default function FlowApp() {
 
   async function handleFolderSelection() {
     try {
-      // setLoading(true);
-
       // 🔥 Abre o seletor de arquivos
       // @ts-ignore
       const directoryHandle = await window.showDirectoryPicker();
-      let functionMap = new Map(); // Armazena todas as funções e onde elas estão definidas
-      let dependencies = []; // Armazena todas as dependências entre funções
+
+      let filesToAnalyze = [];
 
       async function processDirectory(directoryHandle, relativePath = "") {
         for await (const [name, handle] of directoryHandle.entries()) {
-          if (IGNORED_FOLDERS.includes(name)) continue;
-          const fullPath = relativePath ? `${relativePath}/${name}` : name;
+          if (IGNORED_FOLDERS.includes(name)) continue; // Ignorar pastas desnecessárias
+          if (IGNORED_FILES.includes(name)) continue; // Ignorar arquivos desnecessários
+
+          const fullPath = `${relativePath}/${name}`;
 
           if (handle.kind === "directory") {
             await processDirectory(handle, fullPath);
           } else if (handle.kind === "file" && (name.endsWith(".js") || name.endsWith(".ts") || name.endsWith(".tsx"))) {
             const file = await handle.getFile();
             const content = await file.text();
-            processFile(content, name, fullPath);
+            console.log(name, file)
+            filesToAnalyze.push({ name, content });
           }
         }
-      }
-
-      function processFile(content, fileName, filePath) {
-        let functionsInFile = [];
-        let importsInFile = [];
-        let match;
-
-        // 🔍 Encontrar funções no arquivo
-        while ((match = FUNCTION_REGEX.exec(content)) !== null) {
-          const functionName = match[2];
-          functionsInFile.push(functionName);
-
-          functionMap.set(functionName, { file: fileName, path: filePath });
-        }
-
-        // 🔍 Encontrar imports no arquivo
-        while ((match = IMPORT_REGEX.exec(content)) !== null) {
-          const importedFrom = match[4];
-
-          // 🔥 Apenas imports internos do projeto (./, ../, @/)
-          if (!importedFrom.startsWith(".") && !importedFrom.startsWith("@/")) continue;
-
-          let importedItems = [];
-          if (match[1]) importedItems.push(`* as ${match[1]}`);
-          if (match[2]) importedItems.push(...match[2].split(",").map(item => item.trim()));
-          if (match[3]) importedItems.push(match[3]);
-
-          importsInFile.push({ importedFrom, importedItems });
-        }
-
-        // 🔍 Encontrar chamadas de funções dentro do código
-        functionsInFile.forEach((fnName) => {
-          const functionBodyStart = content.indexOf(fnName + "(");
-          if (functionBodyStart !== -1) {
-            const functionBody = content.slice(functionBodyStart);
-
-            for (const [otherFn, location] of functionMap.entries()) {
-              if (functionBody.includes(otherFn + "(") && otherFn !== fnName) {
-                dependencies.push({
-                  source: otherFn,
-                  target: fnName,
-                  type: "internal",
-                  file: fileName,
-                });
-              }
-            }
-          }
-        });
-
-        // 🔍 Mapear funções que dependem de imports
-        importsInFile.forEach(({ importedFrom, importedItems }) => {
-          functionsInFile.forEach((fnName) => {
-            importedItems.forEach((impItem) => {
-              if (content.includes(impItem + "(")) {
-                dependencies.push({
-                  source: impItem,
-                  target: fnName,
-                  type: "import",
-                  file: fileName,
-                  importedFrom,
-                });
-              }
-            });
-          });
-        });
       }
 
       await processDirectory(directoryHandle);
+      console.log("📌 Arquivos filtrados:", filesToAnalyze);
 
-      // 🔥 Agora cria os fluxos no ImpactFlow
-      await createImpactFlow(userUID, functionMap, dependencies);
+      // 🔥 Enviar cada arquivo para a API do Next.js
+      for (const file of filesToAnalyze) {
+        await analyzeFile(file);
+      }
     } catch (error) {
-      console.error("Erro ao processar pasta:", error);
-    } finally {
-      setLoading(false);
+      console.error("Erro ao processar diretório:", error);
     }
   }
 
-  async function createImpactFlow(userUID, functionMap, dependencies) {
-    if (!userUID || functionMap.size === 0) return;
-
-    let nodesMap = new Map();
-
-    const nodeSpacingX = 250; // Espaçamento horizontal entre os nós
-    const nodeSpacingY = 150; // Espaçamento vertical entre os nós
-
-    async function placeNodeSafely(functionId, functionName) {
-      // 🔥 1. Buscar nós existentes no Firebase
-      const nodesSnapshot = await get(ref(realtimeDb, `flows/${userUID}`));
-      let existingPositions = new Set();
-
-      if (nodesSnapshot.exists()) {
-        Object.values(nodesSnapshot.val()).forEach((node: any) => {
-          const positionKey = `${Math.round(node.position.x)},${Math.round(node.position.y)}`;
-          existingPositions.add(positionKey);
-        });
-      }
-
-      let col = 0, row = 0;
-      let newPosition;
-
-      // 🔍 2. Encontrar uma posição livre verificando os nós já existentes
-      while (true) {
-        newPosition = `${col * nodeSpacingX},${row * nodeSpacingY}`;
-
-        if (!existingPositions.has(newPosition)) {
-          existingPositions.add(newPosition); // Marca posição como ocupada
-          break; // Sai do loop se encontrou uma posição livre
-        }
-
-        col++;
-        if (col > 5) { // Ajusta para próxima linha caso atinja limite de colunas
-          col = 0;
-          row++;
-        }
-      }
-
-      // 🔥 3. Criar o nó no Firebase na posição livre
-      const nodeId = uuidv4();
-      await set(ref(realtimeDb, `flows/${userUID}/${nodeId}`), {
-        id: nodeId,
-        data: { label: functionName },
-        position: { x: col * nodeSpacingX, y: row * nodeSpacingY },
-        type: "custom",
+  let col = 0, row = 0;
+  // 🔥 Função para enviar um arquivo para a API
+  async function analyzeFile(file) {
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: file.name, content: file.content }),
       });
 
-      nodesMap.set(functionId, nodeId);
+      const data = await response.json();
+
+      createFlowsAndConnections(data);
+
+      console.log(`📌 Dependências de ${file.name}:`, data);
+    } catch (error) {
+      console.error(`Erro ao analisar ${file.name}:`, error);
     }
-
-    // 🔥 Criar nós para cada função encontrada, garantindo que não haja sobreposição
-    for (const [fnName, location] of functionMap.entries()) {
-      const nodeId = await placeNodeSafely(userUID, fnName); // ⬅️ Agora usamos placeNodeSafely
-      nodesMap.set(fnName, nodeId);
-    }
-
-    // 🔥 Criar conexões entre funções
-    for (const dep of dependencies) {
-      const sourceNodeId = nodesMap.get(dep.source);
-      const targetNodeId = nodesMap.get(dep.target);
-      if (!sourceNodeId || !targetNodeId) continue;
-
-      await set(ref(realtimeDb, `connections/${userUID}/${uuidv4()}`), {
-        id: uuidv4(),
-        source: sourceNodeId,
-        target: targetNodeId,
-      });
-    }
-
-    console.log("📌 Fluxo de dependências criado no ImpactFlow!");
   }
+
+  async function createFlowsAndConnections(data) {
+    const { fileName, dependencies } = data;
+    let existingNodes = reactFlowInstance.getNodes();
+    let existingEdges = reactFlowInstance.getEdges();
+    let newNodes = [];
+    let newEdges = [];
+
+    let existingPositions = new Set(existingNodes.map(node => `${node.position.x}-${node.position.y}`));
+
+    const step = 250;
+
+    // 🔥 Função auxiliar para verificar se há sobreposição
+    const isPositionOccupied = (x, y) => {
+        return [...existingNodes, ...newNodes].some(node =>
+            Math.abs(node.position.x - x) < step && Math.abs(node.position.y - y) < step
+        );
+    };
+
+    // 📌 Criar nó para o arquivo principal, se não existir
+    let fileNode = existingNodes.find(node => node.data.label === fileName);
+    if (!fileNode) {
+        let fileX = col * step;
+        let fileY = row * step;
+
+        while (isPositionOccupied(fileX, fileY)) {
+            fileX += step;
+        }
+
+        fileNode = {
+            id: uuidv4(),
+            data: { label: fileName },
+            position: { x: fileX, y: fileY },
+            type: "custom",
+        };
+
+        newNodes.push(fileNode);
+        existingPositions.add(`${fileX}-${fileY}`);
+    }
+
+    // 🔍 Criar nós para dependências e conexões
+    dependencies.forEach(([importedFrom, importedItems]) => {
+        let dependencyNode = existingNodes.find(node => node.data.label === importedFrom);
+        if (!dependencyNode) {
+            let depX = col * step;
+            let depY = row * step;
+
+            while (isPositionOccupied(depX, depY)) {
+                depX += step;
+            }
+
+            dependencyNode = {
+                id: uuidv4(),
+                data: { label: importedFrom },
+                position: { x: depX, y: depY },
+                type: "custom",
+            };
+
+            newNodes.push(dependencyNode);
+            existingPositions.add(`${depX}-${depY}`);
+
+            col++;
+            if (col >= 5) {
+                col = 0;
+                row++;
+            }
+        }
+
+        // 📌 Criar conexão entre os nós
+        let edgeExists = existingEdges.some(
+            edge => edge.source === dependencyNode.id && edge.target === fileNode.id
+        );
+
+        if (!edgeExists) {
+            newEdges.push({
+                id: uuidv4(),
+                source: dependencyNode.id,
+                target: fileNode.id,
+                animated: true,
+            });
+        }
+    });
+
+    // 🔥 Atualizar o React Flow
+    setNodes(prevNodes => [...prevNodes, ...newNodes]);
+    setEdges(prevEdges => [...prevEdges, ...newEdges]);
+
+    for (const node of newNodes) {
+      const nodeRef = ref(realtimeDb, `flows/${userUID}/${node.id}`);
+      await set(nodeRef, node);
+    }
+
+    // 📌 Adiciona cada conexão diretamente no Firebase
+    for (const edge of newEdges) {
+      const connectionRef = ref(realtimeDb, `connections/${userUID}/${edge.source}-${edge.target}`);
+      await set(connectionRef, edge);
+    }
+  }
+
 
 
   return (

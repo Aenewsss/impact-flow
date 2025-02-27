@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
-import { getDatabase, ref, get, update } from "firebase/database";
+import { ref, get, update } from "firebase/database";
 import { realtimeDb } from "@/config/firebase";
 import { PlanEnum } from "@/enum/plan.enum";
 
