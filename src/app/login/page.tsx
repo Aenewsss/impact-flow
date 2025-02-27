@@ -1,5 +1,5 @@
 'use client'
-import React from "react";
+import React, { useEffect } from "react";
 import Input from "@/components/Input";
 import Button from "@/components/Button";
 import Link from "next/link";
@@ -31,8 +31,20 @@ export default function Login() {
       setError("Email ou senha inválidos!");
     }
   };
+
+  useEffect(() => {
+    // @ts-ignore
+    if (document.getElementById("meuVideo")) { document.getElementById("meuVideo").playbackRate = 0.7; }
+  }, []);
+
   return (
-    <div className="h-[100vh] bg-[url('/bg_login.png')] bg-cover bg-center flex flex-col items-center justify-center">
+    <div className="h-[100vh] flex flex-col items-center justify-center">
+      <video id="meuVideo" className="fixed h-screen w-screen object-cover" autoPlay loop muted playsInline>
+        <source src="/particles-bg1.mp4" type="video/mp4" />
+        Seu navegador não suporta vídeos HTML5.
+      </video>
+
+
 
       <div className="md:w-1/2 w-full bg-black opacity-80 shadow-[#3C153F] shadow-lg rounded-3xl px-12 py-5 flex flex-col gap-4 justify-center items-center drop-shadow-[0_35px_35px_rgba(255,255,255,0.20)]">
 
