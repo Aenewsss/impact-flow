@@ -1,13 +1,13 @@
 'use client'
 import { CustomNode } from "@/components/CustomNode";
-import Modal from "@/components/Modal";
+import html2canvas from "html2canvas";
 import { auth, realtimeDb } from "@/config/firebase";
 import impactService from "@/services/impact.service";
 import { showToast } from "@/utils/show-toast.util";
 import { get, onValue, ref, remove, set } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import React, { useState, useCallback, useEffect } from "react";
-import ReactFlow, { Controls, addEdge, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, SelectionMode, MiniMap, } from "reactflow";
+import ReactFlow, { Controls, addEdge, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, SelectionMode, MiniMap, ConnectionMode, Edge, } from "reactflow";
 import "reactflow/dist/style.css";
 import { useRouter } from "next/navigation";
 import userService from "@/services/user.service";
@@ -20,6 +20,8 @@ import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import { v4 as uuidv4 } from "uuid"; // 📌 Importar biblioteca para gerar IDs únicos
 import CustomGroup from "@/components/GroupNode";
 import Tooltip from "@/components/Tooltip";
+import { FileDownload, FileDownloadOutlined } from "@mui/icons-material";
+import CustomEdge from "@/components/CustomEdge";
 
 // Expressões Regulares
 const FUNCTION_REGEX = /(export\s+default\s+function|export\s+function|const|async function|function|class)\s+([a-zA-Z0-9_]+)\s*\(/g;
@@ -248,29 +250,25 @@ export default function FlowApp() {
     const nodesRef = ref(realtimeDb, `flows/${userUID}`);
     const edgesRef = ref(realtimeDb, `connections/${userUID}`);
 
-    // 📌 Monitorar mudanças nos fluxos em tempo real
-    onValue(nodesRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const nodesData = Object.values(snapshot.val()).map((node: any) => ({
-          ...node,
-          position: node.position || { x: 0, y: 0 },
-        }));
-        console.log("📌 Nodes Atualizados:", nodesData);
-        setNodes(nodesData);
-      }
-    });
+    const nodesSnapshot = await get(nodesRef)
+    if (nodesSnapshot.exists()) {
+      const nodesData = Object.values(nodesSnapshot.val()).map((node: any) => ({
+        ...node,
+        position: node.position || { x: 0, y: 0 },
+      }));
+      console.log(nodesData)
+      setNodes(nodesData);
+    }
 
-    // 📌 Monitorar mudanças nas conexões em tempo real
-    onValue(edgesRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const edgesData = Object.values(snapshot.val()).map((edge: any) => ({
-          ...edge,
-          position: edge.position || { x: 0, y: 0 },
-        }));
-        console.log("📌 Conexões Atualizadas:", edgesData);
-        setEdges(edgesData);
-      }
-    });
+
+    const edgesSnapshot = await get(edgesRef)
+    if (edgesSnapshot.exists()) {
+      const edgesData = Object.values(edgesSnapshot.val()).map((node: any) => ({
+        ...node,
+        position: node.position || { x: 0, y: 0 },
+      }));
+      setEdges(edgesData);
+    }
   }
 
   const onConnect = useCallback(
@@ -278,10 +276,11 @@ export default function FlowApp() {
       if (!userUID) return;
 
       setEdges((eds) => addEdge(params, eds))
-      const connectionRef = ref(realtimeDb, `connections/${userUID}/${params.source}-${params.target}`);
+      const connectionRef = ref(realtimeDb, `connections/${userUID}/${params.source}-${params.target}-${params.sourceHandle}-${params.targetHandle}`);
       try {
         await set(connectionRef, {
-          ...params
+          ...params,
+          id: uuidv4(),
         });
       } catch (error) {
         console.error("Erro ao criar conexão:", error);
@@ -383,14 +382,16 @@ export default function FlowApp() {
     impactService.updateFlow(newNode, userUID);
   };
 
-  const onEdgeDelete = async (edge) => {
-    const connectionRef = ref(realtimeDb, `connections/${userUID}/${edge.source}-${edge.target}`);
-    try {
-      await remove(connectionRef);
-      setEdges((eds) => eds.filter((e) => e.id !== edge.id));
-    } catch (error) {
-      console.error("Erro ao remover conexão:", error);
-    }
+  const onEdgeDelete = async (edges: Edge[]) => {
+    edges.forEach(async edge => {
+      const connectionRef = ref(realtimeDb, `connections/${userUID}/${edge.source}-${edge.target}-${edge.sourceHandle}-${edge.targetHandle}`);
+      try {
+        await remove(connectionRef);
+        setEdges((eds) => eds.filter((e) => e.id !== edge.id));
+      } catch (error) {
+        console.error("Erro ao remover conexão:", error);
+      }
+    })
   };
 
   const onNodeDelete = async (node) => {
@@ -399,6 +400,11 @@ export default function FlowApp() {
   }
 
   async function handleFolderSelection() {
+    if (await userService.getUserPlan(userUID) == PlanEnum.FREE) {
+      showToast("Você não tem permissão para essa funcionalidade", 'warning');
+      return setShowModalSubscription(true)
+    }
+
     try {
       // 🔥 Abre o seletor de arquivos
       // @ts-ignore
@@ -418,14 +424,12 @@ export default function FlowApp() {
           } else if (handle.kind === "file" && (name.endsWith(".js") || name.endsWith(".ts") || name.endsWith(".tsx"))) {
             const file = await handle.getFile();
             const content = await file.text();
-            console.log(name, file)
             filesToAnalyze.push({ name, content });
           }
         }
       }
 
       await processDirectory(directoryHandle);
-      console.log("📌 Arquivos filtrados:", filesToAnalyze);
 
       // 🔥 Enviar cada arquivo para a API do Next.js
       for (const file of filesToAnalyze) {
@@ -450,7 +454,6 @@ export default function FlowApp() {
 
       createFlowsAndConnections(data);
 
-      console.log(`📌 Dependências de ${file.name}:`, data);
     } catch (error) {
       console.error(`Erro ao analisar ${file.name}:`, error);
     }
@@ -469,73 +472,73 @@ export default function FlowApp() {
 
     // 🔥 Função auxiliar para verificar se há sobreposição
     const isPositionOccupied = (x, y) => {
-        return [...existingNodes, ...newNodes].some(node =>
-            Math.abs(node.position.x - x) < step && Math.abs(node.position.y - y) < step
-        );
+      return [...existingNodes, ...newNodes].some(node =>
+        Math.abs(node.position.x - x) < step && Math.abs(node.position.y - y) < step
+      );
     };
 
     // 📌 Criar nó para o arquivo principal, se não existir
     let fileNode = existingNodes.find(node => node.data.label === fileName);
     if (!fileNode) {
-        let fileX = col * step;
-        let fileY = row * step;
+      let fileX = col * step;
+      let fileY = row * step;
 
-        while (isPositionOccupied(fileX, fileY)) {
-            fileX += step;
-        }
+      while (isPositionOccupied(fileX, fileY)) {
+        fileX += step;
+      }
 
-        fileNode = {
-            id: uuidv4(),
-            data: { label: fileName },
-            position: { x: fileX, y: fileY },
-            type: "custom",
-        };
+      fileNode = {
+        id: uuidv4(),
+        data: { label: fileName },
+        position: { x: fileX, y: fileY },
+        type: "custom",
+      };
 
-        newNodes.push(fileNode);
-        existingPositions.add(`${fileX}-${fileY}`);
+      newNodes.push(fileNode);
+      existingPositions.add(`${fileX}-${fileY}`);
     }
 
     // 🔍 Criar nós para dependências e conexões
     dependencies.forEach(([importedFrom, importedItems]) => {
-        let dependencyNode = existingNodes.find(node => node.data.label === importedFrom);
-        if (!dependencyNode) {
-            let depX = col * step;
-            let depY = row * step;
+      let dependencyNode = existingNodes.find(node => node.data.label === importedFrom);
+      if (!dependencyNode) {
+        let depX = col * step;
+        let depY = row * step;
 
-            while (isPositionOccupied(depX, depY)) {
-                depX += step;
-            }
-
-            dependencyNode = {
-                id: uuidv4(),
-                data: { label: importedFrom },
-                position: { x: depX, y: depY },
-                type: "custom",
-            };
-
-            newNodes.push(dependencyNode);
-            existingPositions.add(`${depX}-${depY}`);
-
-            col++;
-            if (col >= 5) {
-                col = 0;
-                row++;
-            }
+        while (isPositionOccupied(depX, depY)) {
+          depX += step;
         }
 
-        // 📌 Criar conexão entre os nós
-        let edgeExists = existingEdges.some(
-            edge => edge.source === dependencyNode.id && edge.target === fileNode.id
-        );
+        dependencyNode = {
+          id: uuidv4(),
+          data: { label: importedFrom },
+          position: { x: depX, y: depY },
+          type: "custom",
+        };
 
-        if (!edgeExists) {
-            newEdges.push({
-                id: uuidv4(),
-                source: dependencyNode.id,
-                target: fileNode.id,
-                animated: true,
-            });
+        newNodes.push(dependencyNode);
+        existingPositions.add(`${depX}-${depY}`);
+
+        col++;
+        if (col >= 5) {
+          col = 0;
+          row++;
         }
+      }
+
+      // 📌 Criar conexão entre os nós
+      let edgeExists = existingEdges.some(
+        edge => edge.source === dependencyNode.id && edge.target === fileNode.id
+      );
+
+      if (!edgeExists) {
+        newEdges.push({
+          id: uuidv4(),
+          source: dependencyNode.id,
+          target: fileNode.id,
+          animated: false,
+        });
+      }
     });
 
     // 🔥 Atualizar o React Flow
@@ -554,7 +557,26 @@ export default function FlowApp() {
     }
   }
 
+  async function captureScreenshot() {
+    const flowContainer = document.querySelector(".react-flow"); // Certifique-se de pegar o container correto
+    if (!flowContainer) {
+      console.error("Elemento do fluxo não encontrado.");
+      return;
+    }
 
+    try {
+      const canvas = await html2canvas(flowContainer as any);
+      const image = canvas.toDataURL("image/png");
+
+      // Criar um link para baixar a imagem
+      const link = document.createElement("a");
+      link.href = image;
+      link.download = "screenshot.png";
+      link.click();
+    } catch (error) {
+      console.error("Erro ao capturar a tela:", error);
+    }
+  }
 
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
@@ -566,6 +588,7 @@ export default function FlowApp() {
         onNodesDelete={onNodeDelete}
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
+        onEdgesDelete={onEdgeDelete}
         onPaneClick={() => {
           setSelectedNode('');
           setShowAITextarea(false)
@@ -573,14 +596,16 @@ export default function FlowApp() {
         fitView
         className="bg-zinc-900"
         defaultEdgeOptions={{
-          markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 }
+          markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 },
+
         }}
         nodeTypes={nodeTypes}
         selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode="Shift" // 🔥 Usa Shift para seleção múltipla
         nodesDraggable
         nodesConnectable
-        snapToGrid // 🔥 Mantém alinhado os nodes ao arrastar
+        snapToGrid
+        connectionMode={ConnectionMode.Loose}
       >
         <Controls />
         <MiniMap />
@@ -674,6 +699,16 @@ export default function FlowApp() {
             title="Abrir IA"
           >
             <AutoAwesomeOutlinedIcon />
+          </button>
+        </Tooltip>
+
+        <Tooltip text="Baixar fluxo">
+          <button
+            onClick={captureScreenshot}
+            className="p-3 rounded-full transition-all hover:scale-110 bg-teal-600 text-white shadow-lg flex items-center justify-center"
+            title="Baixar fluxo"
+          >
+            <FileDownloadOutlined />
           </button>
         </Tooltip>
 
