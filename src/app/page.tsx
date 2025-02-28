@@ -22,6 +22,8 @@ import CustomGroup from "@/components/GroupNode";
 import Tooltip from "@/components/Tooltip";
 import { FileDownload, FileDownloadOutlined } from "@mui/icons-material";
 import CustomEdge from "@/components/CustomEdge";
+import { saveAs } from "file-saver";
+import { Document, Packer, Paragraph, TextRun } from "docx";
 
 // Expressões Regulares
 const FUNCTION_REGEX = /(export\s+default\s+function|export\s+function|const|async function|function|class)\s+([a-zA-Z0-9_]+)\s*\(/g;
@@ -48,7 +50,8 @@ export default function FlowApp() {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [showAITextarea, setShowAITextarea] = useState(false);
-  const [countNodes, setCountNodes] = useState(0);
+  const [nodesImpacted, setNodesImpacted] = useState([]);
+  const [nodeImpactSource, setNodeImpactSource] = useState('');
 
   const reactFlowInstance = useReactFlow(); // Hook para pegar as dimensões da tela
 
@@ -315,7 +318,11 @@ export default function FlowApp() {
 
   function viewImpact(event, nodeId, nodesImpacted = new Set()) {
     // Se for a primeira chamada, começamos com o nó selecionado
-    if (!nodeId) nodeId = selectedNode;
+    if (!nodeId) {
+      nodeId = selectedNode
+      // @ts-ignore
+      setNodeImpactSource(nodes.find(el => el.id == selectedNode).data.label)
+    };
 
     // Encontra todas as conexões de saída a partir do nó atual
     const edgesImpacted = edges.filter(edge => edge.source === nodeId);
@@ -341,12 +348,15 @@ export default function FlowApp() {
       const nodesNoImpacted = nodes.filter(node => !nodesImpacted.has(node.id));
 
       setNodes([...nodesNoImpacted, ...nodesImpactedArray]);
+      setNodesImpacted(nodesImpactedArray.map(el => el.data.label))
     }
   }
 
   function clearImpact() {
     fetchNodes()
     setSelectedNode('')
+    setNodesImpacted([])
+    setNodeImpactSource('')
   }
 
   const onNodeDragStop = (event, node) => {
@@ -578,6 +588,46 @@ export default function FlowApp() {
     }
   }
 
+  function exportToDoc(sourceFlow, fluxosImpactados: string[]) {
+    if (!fluxosImpactados.length) {
+      alert("Nenhum fluxo impactado para exportar!");
+      return;
+    }
+
+    // Criar um documento
+    const doc = new Document({
+      sections: [
+        {
+          properties: {},
+          children: [
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: "Fluxos Impactados",
+                  bold: true,
+                  size: 28, // Tamanho da fonte
+                }),
+              ],
+            }),
+            new Paragraph({
+              children: [new TextRun({ text: `Fluxo de origem: ${sourceFlow}`, size: 24 })],
+            }),
+            ...fluxosImpactados.map((fluxo) =>
+              new Paragraph({
+                children: [new TextRun({ text: fluxo, size: 16 })],
+              })
+            ),
+          ],
+        },
+      ],
+    });
+
+    // Gerar e baixar o arquivo
+    Packer.toBlob(doc).then((blob) => {
+      saveAs(blob, "fluxos_impactados.docx");
+    });
+  }
+
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
       <ReactFlow
@@ -730,6 +780,28 @@ export default function FlowApp() {
             <div className="w-16 h-16 border-t-4 border-blue-500 border-solid rounded-full animate-spin"></div>
           </div>
         )
+      }
+
+      {
+        nodesImpacted.length ?
+          <div className="absolute top-1/4 left-10 shadow-md shadow-black rounded p-4 bg-zinc-900">
+            <div className="flex flex-col gap-4">
+              <h2 className="text-white text-xl">Fluxos de impacto</h2>
+              <h3>Origem: {nodeImpactSource}</h3>
+              {nodesImpacted.map((el, index) =>
+                <div key={index}>
+                  <span>{el}</span>
+                </div>
+              )}
+              <button
+                onClick={() => exportToDoc(nodeImpactSource, nodesImpacted)}
+                className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              >
+                Exportar <FileDownloadOutlined />
+              </button>
+            </div>
+          </div>
+          : null
       }
     </div >
   );
