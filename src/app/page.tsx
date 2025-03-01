@@ -7,7 +7,7 @@ import { showToast } from "@/utils/show-toast.util";
 import { get, onValue, ref, remove, set } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import React, { useState, useCallback, useEffect } from "react";
-import ReactFlow, { Controls, addEdge, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, SelectionMode, MiniMap, ConnectionMode, Edge, } from "reactflow";
+import ReactFlow, { Controls, addEdge, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, SelectionMode, MiniMap, ConnectionMode, Edge, Background, BackgroundVariant, ConnectionLineType, } from "reactflow";
 import "reactflow/dist/style.css";
 import { useRouter } from "next/navigation";
 import userService from "@/services/user.service";
@@ -52,6 +52,8 @@ export default function FlowApp() {
   const [showAITextarea, setShowAITextarea] = useState(false);
   const [nodesImpacted, setNodesImpacted] = useState([]);
   const [nodeImpactSource, setNodeImpactSource] = useState('');
+  const [ghostNode, setGhostNode] = useState(null);
+  const [creatingNode, setCreatingNode] = useState(null);
 
   const reactFlowInstance = useReactFlow(); // Hook para pegar as dimensões da tela
 
@@ -87,11 +89,6 @@ export default function FlowApp() {
         return {
           ...node,
           selected: isSelected, // 🔥 Mantém a seleção ao adicionar novos nodes
-          style: {
-            ...node.style,
-            border: isSelected ? "3px solid #3C153F" : (node.style?.border as string)?.includes('solid red') ? node.style.border : "none",
-            borderRadius: isSelected ? "8px" : "0px",
-          }
         };
       })
     );
@@ -259,7 +256,6 @@ export default function FlowApp() {
         ...node,
         position: node.position || { x: 0, y: 0 },
       }));
-      console.log(nodesData)
       setNodes(nodesData);
     }
 
@@ -278,23 +274,50 @@ export default function FlowApp() {
     async (params) => {
       if (!userUID) return;
 
-      setEdges((eds) => addEdge(params, eds))
-      const connectionRef = ref(realtimeDb, `connections/${userUID}/${params.source}-${params.target}-${params.sourceHandle}-${params.targetHandle}`);
-      try {
-        await set(connectionRef, {
-          ...params,
-          id: uuidv4(),
-        });
-      } catch (error) {
-        console.error("Erro ao criar conexão:", error);
+      // Se a conexão já tem target, segue o fluxo normal
+      if (params.target) {
+        setEdges((eds) => addEdge(params, eds));
+        const connectionRef = ref(realtimeDb, `connections/${userUID}/${params.source}-${params.target}-${params.sourceHandle}-${params.targetHandle}`);
+        try {
+          await set(connectionRef, { ...params, id: uuidv4() });
+        } catch (error) {
+          console.error("Erro ao criar conexão:", error);
+        }
+        return;
       }
+
+      // 🚀 Criando um novo nó manualmente
+      const getNewNodePosition = (sourceNodeId) => {
+        const sourceNode = nodes.find(node => node.id === sourceNodeId);
+        if (!sourceNode) return { x: 0, y: 0 }; // Caso não encontre o nó, retorna (0,0)
+
+        const spacingX = 200; // Distância horizontal entre os nós
+        const spacingY = 120; // Distância vertical entre os nós
+
+        return {
+          x: sourceNode.position.x + spacingX, // Move para a direita
+          y: sourceNode.position.y + spacingY, // Move para baixo
+        };
+      };
+
+      const newNodeId = uuidv4();
+      const { x, y } = getNewNodePosition(params.source); // Obtém posição para o novo nó
+
+      setNodes((prevNodes) => [
+        ...prevNodes,
+        {
+          id: newNodeId,
+          position: { x, y },
+          data: { label: "Novo fluxo" },
+          type: "default",
+        },
+      ]);
     },
-    [setEdges, userUID]
+    [setEdges, setNodes, userUID]
   );
 
   const onNodeClick = (event: any, node: Node) => {
     const edgesImpacted = edges.filter(edge => edge.source == node.id)
-
     setSelectedNode(node.id);
 
     const nodesImpacted = edgesImpacted.map(ed => nodes.find(node => node.id == ed.target))
@@ -628,10 +651,78 @@ export default function FlowApp() {
     });
   }
 
+  const onConnectStart = useCallback((_, { nodeId, handleId }) => {
+    setCreatingNode({ source: nodeId, sourceHandle: handleId });
+  }, []);
+
+  const onConnectEnd = useCallback(
+    (event, connectionState?: any) => {
+      if (!creatingNode) return;
+
+      const { x, y } = reactFlowInstance.project({ x: event.clientX, y: event.clientY })
+      const newNodeId = uuidv4();
+
+      const newNode = {
+        id: newNodeId,
+        position: { x: x - 74, y },
+        data: { label: "Novo fluxo" },
+        type: "default",
+      };
+
+      setNodes((nds) => [...nds.filter((n) => n.id !== "ghost"), newNode]);
+      console.log(connectionState)
+      // setEdges((eds) =>
+      //   eds.concat({ id, source: connectionState.fromNode.id, target: id }),
+      // );
+
+      setGhostNode(null);
+      setCreatingNode(false);
+    },
+    [creatingNode, setNodes, setEdges]
+  );
+
+  useEffect(() => {
+    const onMouseMove = (event) => {
+      if (!creatingNode) return;
+
+      const { x, y } = reactFlowInstance.project({ x: event.clientX, y: event.clientY })
+
+      setGhostNode({
+        id: "ghost",
+        position: { x: x - 74, y },
+        data: { label: "Novo fluxo (prévia)" },
+        style: {
+          opacity: 0.5,
+          background: "#ccc",
+          border: "1px dashed #000",
+        },
+        height: 64,
+        width: 208,
+        type: "default",
+      });
+    };
+
+    const onMouseUp = (event) => {
+      if (!creatingNode) return;
+      onConnectEnd(event);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [creatingNode]);
+
   return (
-    <div style={{ width: "100vw", height: "100vh" }}>
+    <div
+      style={{ width: "100vw", height: "100vh" }}
+    >
       <ReactFlow
-        nodes={nodes} edges={edges}
+        nodes={ghostNode ? [...nodes, ghostNode] : nodes} // 🔥 Mostra o nó fantasma
+        edges={edges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
@@ -646,9 +737,11 @@ export default function FlowApp() {
         fitView
         className="bg-zinc-900"
         defaultEdgeOptions={{
+          type: 'step',
           markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 },
 
         }}
+        connectionLineType={ConnectionLineType.Step}
         nodeTypes={nodeTypes}
         selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode="Shift" // 🔥 Usa Shift para seleção múltipla
@@ -656,7 +749,15 @@ export default function FlowApp() {
         nodesConnectable
         snapToGrid
         connectionMode={ConnectionMode.Loose}
+        onConnectStart={onConnectStart} // 🔥 Detecta quando começa uma conexão
+        onConnectEnd={onConnectEnd} // 🔥 Cria o nó ao soltar a seta
       >
+        <Background
+          variant={BackgroundVariant.Dots} // Alternativamente, pode ser "lines" ou "cross"
+          gap={12}       // Espaçamento entre os pontos
+          size={1}       // Tamanho dos pontos
+          color="#aaa"   // Cor do grid
+        />
         <Controls />
         <MiniMap />
       </ReactFlow>
