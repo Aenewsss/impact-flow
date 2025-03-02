@@ -1,5 +1,6 @@
 import { realtimeDb } from "@/config/firebase";
 import { push, ref, remove, set } from "firebase/database";
+import { Edge } from "reactflow";
 
 class ImpactService {
     async registerFlow(data) {
@@ -33,14 +34,12 @@ class ImpactService {
         }
     }
 
-    async registerConnection(data) {
+    async registerConnection(edge, userUID) {
+        const connectionRef = ref(realtimeDb, `connections/${userUID}/${edge.source}-${edge.target}-${edge.sourceHandle}-${edge.targetHandle}`);
         try {
-            const docRef = push(ref(realtimeDb, "connection"));
-            await set(docRef, data);
-            console.log("Documento inserido com sucesso:", docRef.key);
-            return docRef.key; // Retorna o ID do novo documento
+            await set(connectionRef, { ...edge });
         } catch (error) {
-            console.error("Erro ao inserir documento:", error);
+            console.error("Erro ao criar conexão:", error);
         }
     }
 

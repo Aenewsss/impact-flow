@@ -1,6 +1,5 @@
 'use client'
 import { CustomNode } from "@/components/CustomNode";
-import html2canvas from "html2canvas";
 import { auth, realtimeDb } from "@/config/firebase";
 import impactService from "@/services/impact.service";
 import { showToast } from "@/utils/show-toast.util";
@@ -21,9 +20,13 @@ import { v4 as uuidv4 } from "uuid"; // 📌 Importar biblioteca para gerar IDs 
 import CustomGroup from "@/components/GroupNode";
 import Tooltip from "@/components/Tooltip";
 import { FileDownload, FileDownloadOutlined } from "@mui/icons-material";
-import CustomEdge from "@/components/CustomEdge";
-import { saveAs } from "file-saver";
-import { Document, Packer, Paragraph, TextRun } from "docx";
+
+import { useNodesStore } from "@/store/nodes.store";
+import { exportToDoc } from "./functions/export-doc.function";
+import { captureScreenshot } from "./functions/screenshot.function";
+import { CustomEdge } from "@/components/CustomEdge";
+import { PreviewNode } from "@/components/PreviewNode";
+
 
 // Expressões Regulares
 const FUNCTION_REGEX = /(export\s+default\s+function|export\s+function|const|async function|function|class)\s+([a-zA-Z0-9_]+)\s*\(/g;
@@ -35,16 +38,19 @@ const IGNORED_FILES = ["package.json", "package-lock.json", "yarn.lock", "pnpm-l
 
 const nodeTypes = {
   custom: CustomNode,
+  preview: PreviewNode,
   group: CustomGroup
+};
+
+const edgeTypes = {
+  custom: CustomEdge,
 };
 
 export default function FlowApp() {
   const router = useRouter()
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [selectedNode, setSelectedNode] = useState(null);
-  const [userUID, setUserUID] = useState<string | null>(null); // Estado para armazenar e-mail do usuário
+  const [nodesReactFlow, , onNodesChange] = useNodesState([]);
+  const [, , onEdgesChange] = useEdgesState([]);
   const [showEmptyEdges, setShowEmptyEdges] = useState(false);
   const [showModalSubscription, setShowModalSubscription] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -52,10 +58,14 @@ export default function FlowApp() {
   const [showAITextarea, setShowAITextarea] = useState(false);
   const [nodesImpacted, setNodesImpacted] = useState([]);
   const [nodeImpactSource, setNodeImpactSource] = useState('');
-  const [ghostNode, setGhostNode] = useState(null);
-  const [creatingNode, setCreatingNode] = useState(null);
-
+  const [newEdge, setNewEdge] = useState(null);
   const reactFlowInstance = useReactFlow(); // Hook para pegar as dimensões da tela
+
+  const {
+    selectedNode, setSelectedNode, ghostNode,
+    userUID, setUserUID, nodes, setNodes, edges,
+    setEdges, addNode, updateNodePosition
+  } = useNodesStore(store => store)
 
   useEffect(() => {
     // Obter o usuário autenticado
@@ -80,18 +90,7 @@ export default function FlowApp() {
 
   const handleNodesChange = (changes) => {
     onNodesChange(changes); // 🔥 Mantém o comportamento original do React Flow
-
-    setNodes(prevNodes =>
-      prevNodes.map(node => {
-        // 🔥 Verifica se o node está selecionado atualmente ou foi alterado pelo evento
-        const isSelected = changes.some(change => change.id === node.id ? change.selected ?? node.selected : node.selected);
-
-        return {
-          ...node,
-          selected: isSelected, // 🔥 Mantém a seleção ao adicionar novos nodes
-        };
-      })
-    );
+    updateNodePosition(changes)
   };
 
   async function generateFlow() {
@@ -209,8 +208,8 @@ export default function FlowApp() {
           })
           .filter(Boolean);
 
-        setNodes(prevNodes => [...prevNodes, ...uniqueNodes]);
-        setEdges(prevEdges => [...prevEdges, ...uniqueEdges]);
+        setNodes([...nodes, ...uniqueNodes]);
+        setEdges([...edges, ...uniqueEdges]);
 
         if (firstNodePosition) {
           reactFlowInstance.setCenter(firstNodePosition.x, firstNodePosition.y);
@@ -256,6 +255,7 @@ export default function FlowApp() {
         ...node,
         position: node.position || { x: 0, y: 0 },
       }));
+
       setNodes(nodesData);
     }
 
@@ -272,10 +272,12 @@ export default function FlowApp() {
 
   const onConnect = useCallback(
     async (params) => {
+      
       if (!userUID) return;
 
       // Se a conexão já tem target, segue o fluxo normal
       if (params.target) {
+
         setEdges((eds) => addEdge(params, eds));
         const connectionRef = ref(realtimeDb, `connections/${userUID}/${params.source}-${params.target}-${params.sourceHandle}-${params.targetHandle}`);
         try {
@@ -286,32 +288,32 @@ export default function FlowApp() {
         return;
       }
 
-      // 🚀 Criando um novo nó manualmente
-      const getNewNodePosition = (sourceNodeId) => {
-        const sourceNode = nodes.find(node => node.id === sourceNodeId);
-        if (!sourceNode) return { x: 0, y: 0 }; // Caso não encontre o nó, retorna (0,0)
+      // // 🚀 Criando um novo nó manualmente
+      // const getNewNodePosition = (sourceNodeId) => {
+      //   const sourceNode = nodes.find(node => node.id === sourceNodeId);
+      //   if (!sourceNode) return { x: 0, y: 0 }; // Caso não encontre o nó, retorna (0,0)
 
-        const spacingX = 200; // Distância horizontal entre os nós
-        const spacingY = 120; // Distância vertical entre os nós
+      //   const spacingX = 200; // Distância horizontal entre os nós
+      //   const spacingY = 120; // Distância vertical entre os nós
 
-        return {
-          x: sourceNode.position.x + spacingX, // Move para a direita
-          y: sourceNode.position.y + spacingY, // Move para baixo
-        };
-      };
+      //   return {
+      //     x: sourceNode.position.x + spacingX, // Move para a direita
+      //     y: sourceNode.position.y + spacingY, // Move para baixo
+      //   };
+      // };
 
-      const newNodeId = uuidv4();
-      const { x, y } = getNewNodePosition(params.source); // Obtém posição para o novo nó
+      // const newNodeId = uuidv4();
+      // const { x, y } = getNewNodePosition(params.source); // Obtém posição para o novo nó
 
-      setNodes((prevNodes) => [
-        ...prevNodes,
-        {
-          id: newNodeId,
-          position: { x, y },
-          data: { label: "Novo fluxo" },
-          type: "default",
-        },
-      ]);
+      // setNodes((prevNodes) => [
+      //   ...prevNodes,
+      //   {
+      //     id: newNodeId,
+      //     position: { x, y },
+      //     data: { label: "Novo fluxo" },
+      //     type: "custom",
+      //   },
+      // ]);
     },
     [setEdges, setNodes, userUID]
   );
@@ -323,9 +325,16 @@ export default function FlowApp() {
     const nodesImpacted = edgesImpacted.map(ed => nodes.find(node => node.id == ed.target))
     setShowEmptyEdges(nodesImpacted.length == 0)
   };
+  const onNodeDragStart = (event: any, node: Node) => {
+    const edgesImpacted = edges.filter(edge => edge.source == node.id)
+    setSelectedNode(node.id);
+
+    const nodesImpacted = edgesImpacted.map(ed => nodes.find(node => node.id == ed.target))
+    setShowEmptyEdges(nodesImpacted.length == 0)
+  };
 
   const onNodeChange = (id, label) => {
-    setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { label } } : n)));
+    setNodes(nodes.map((n) => (n.id === id ? { ...n, data: { label } } : n)));
 
     setTimeout(() => {
       // Encontra o nó atualizado na lista de nodes
@@ -339,15 +348,10 @@ export default function FlowApp() {
     }, 1000);
   };
 
-  function viewImpact(event, nodeId, nodesImpacted = new Set()) {
-    // Se for a primeira chamada, começamos com o nó selecionado
-    if (!nodeId) {
-      nodeId = selectedNode
-      // @ts-ignore
-      setNodeImpactSource(nodes.find(el => el.id == selectedNode).data.label)
-    };
+  function viewImpact(event, nodeId, nodesImpacted = new Map(), directImpactNodes = new Map(), depth = 0) {
+    if (!nodeId) nodeId = selectedNode;
 
-    // Encontra todas as conexões de saída a partir do nó atual
+    // Filtra todas as conexões de saída do nó atual
     const edgesImpacted = edges.filter(edge => edge.source === nodeId);
 
     // Encontra os nós impactados por essas conexões
@@ -355,23 +359,43 @@ export default function FlowApp() {
       .map(edge => nodes.find(node => node.id === edge.target))
       .filter(node => node && !nodesImpacted.has(node.id)); // Evita loops infinitos
 
-    // Adiciona os novos nós impactados ao conjunto
-    newNodes.forEach(node => nodesImpacted.add(node.id));
+    // Adiciona os novos nós impactados ao conjunto e registra a origem do impacto
+    newNodes.forEach(node => {
+      nodesImpacted.set(node.id, {
+        source: nodeId,  // 🌟 Registra o nó de onde veio o impacto
+        type: depth === 0 ? "direto" : "indireto", // Define se é direto ou indireto
+      });
 
-    // Se ainda há nós a processar, continua a recursão
-    newNodes.forEach(node => viewImpact(null, node.id, nodesImpacted));
+      // Se for **primeiro nível de conexão**, é impacto direto
+      if (depth === 0) {
+        directImpactNodes.set(node.id, nodeId);
+      }
+    });
 
-    // Se for a última iteração, atualiza o estado
+    // Continua a recursão para os impactos indiretos
+    newNodes.forEach(node => viewImpact(null, node.id, nodesImpacted, directImpactNodes, depth + 1));
+
+    // Se for a última iteração, atualiza o estado e estiliza os nós
     if (nodeId === selectedNode) {
-      const nodesImpactedArray = Array.from(nodesImpacted).map(nodeId => ({
-        ...nodes.find(n => n.id === nodeId),
-        style: { border: "2px solid red" },
-      }));
+      const nodesImpactedArray = Array.from(nodesImpacted.entries()).map(([nodeId, impactData]) => {
+        const node = nodes.find(n => n.id === nodeId);
+
+        return {
+          ...node,
+          style: impactData.type === "direto"
+            ? { border: "2px solid red" } // 🔴 Impacto direto
+            : { border: "2px solid orange" }, // 🟠 Impacto indireto
+          data: {
+            ...node.data,
+            impactInfo: `Impacto ${impactData.type} (${nodes.find(node => node.id == impactData.source).data.label})`
+          }
+        };
+      });
 
       const nodesNoImpacted = nodes.filter(node => !nodesImpacted.has(node.id));
 
       setNodes([...nodesNoImpacted, ...nodesImpactedArray]);
-      setNodesImpacted(nodesImpactedArray.map(el => el.data.label))
+      setNodesImpacted(nodesImpactedArray.map(el => el.data.label));
     }
   }
 
@@ -381,6 +405,8 @@ export default function FlowApp() {
     setNodesImpacted([])
     setNodeImpactSource('')
   }
+
+  console.log(edges)
 
   const onNodeDragStop = (event, node) => {
 
@@ -408,11 +434,12 @@ export default function FlowApp() {
       id: uuidv4(),
       type: "custom",
       position: { x: centerX, y: centerY },
-      data: { label: `Novo fluxo ${nodes.length + 1}` },
+      data: { label: '' },
+      height: 64,
+      width: 208,
     };
 
-    setNodes((prevNodes) => [...prevNodes, newNode]);
-    impactService.updateFlow(newNode, userUID);
+    addNode(newNode, userUID)
   };
 
   const onEdgeDelete = async (edges: Edge[]) => {
@@ -575,8 +602,8 @@ export default function FlowApp() {
     });
 
     // 🔥 Atualizar o React Flow
-    setNodes(prevNodes => [...prevNodes, ...newNodes]);
-    setEdges(prevEdges => [...prevEdges, ...newEdges]);
+    setNodes([...nodes, ...newNodes]);
+    setEdges([...edges, ...newEdges]);
 
     for (const node of newNodes) {
       const nodeRef = ref(realtimeDb, `flows/${userUID}/${node.id}`);
@@ -590,131 +617,92 @@ export default function FlowApp() {
     }
   }
 
-  async function captureScreenshot() {
-    const flowContainer = document.querySelector(".react-flow"); // Certifique-se de pegar o container correto
-    if (!flowContainer) {
-      console.error("Elemento do fluxo não encontrado.");
-      return;
-    }
+  // const onConnectStart = useCallback((_, { nodeId, handleId }) => {
+  // setCreatingNode({ source: nodeId, sourceHandle: handleId });
+  // }, []);
 
-    try {
-      const canvas = await html2canvas(flowContainer as any);
-      const image = canvas.toDataURL("image/png");
+  // const onConnectEnd = useCallback(
+  // (event, connectionState?: any) => {
+  // if (!creatingNode) return;
 
-      // Criar um link para baixar a imagem
-      const link = document.createElement("a");
-      link.href = image;
-      link.download = "screenshot.png";
-      link.click();
-    } catch (error) {
-      console.error("Erro ao capturar a tela:", error);
-    }
-  }
+  // const { x, y } = reactFlowInstance.project({ x: event.clientX, y: event.clientY })
+  // const newNodeId = uuidv4();
 
-  function exportToDoc(sourceFlow, fluxosImpactados: string[]) {
-    if (!fluxosImpactados.length) {
-      alert("Nenhum fluxo impactado para exportar!");
-      return;
-    }
+  // const newNode = {
+  //   id: newNodeId,
+  //   position: { x: x - 74, y },
+  //   data: { label: "Novo fluxo" },
+  //   type: "default",
+  // };
 
-    // Criar um documento
-    const doc = new Document({
-      sections: [
-        {
-          properties: {},
-          children: [
-            new Paragraph({
-              children: [
-                new TextRun({
-                  text: "Fluxos Impactados",
-                  bold: true,
-                  size: 28, // Tamanho da fonte
-                }),
-              ],
-            }),
-            new Paragraph({
-              children: [new TextRun({ text: `Fluxo de origem: ${sourceFlow}`, size: 24 })],
-            }),
-            ...fluxosImpactados.map((fluxo) =>
-              new Paragraph({
-                children: [new TextRun({ text: fluxo, size: 16 })],
-              })
-            ),
-          ],
-        },
-      ],
-    });
+  // setNodes((nds) => [...nds.filter((n) => n.id !== "ghost"), newNode]);
+  // // setEdges((eds) =>
+  // //   eds.concat({ id, source: connectionState.fromNode.id, target: id }),
+  // // );
 
-    // Gerar e baixar o arquivo
-    Packer.toBlob(doc).then((blob) => {
-      saveAs(blob, "fluxos_impactados.docx");
-    });
-  }
+  // setGhostNode(null);
+  // setCreatingNode(false);
+  // },
+  // [creatingNode, setNodes, setEdges]
+  // );
 
-  const onConnectStart = useCallback((_, { nodeId, handleId }) => {
-    setCreatingNode({ source: nodeId, sourceHandle: handleId });
-  }, []);
+  const onConnectStart = (_, { nodeId, handleType }) => {
+    setNewEdge({ source: nodeId, sourceHandle: handleType });
+  };
 
-  const onConnectEnd = useCallback(
-    (event, connectionState?: any) => {
-      if (!creatingNode) return;
+  // Quando solta o mouse, cria a conexão
+  const onConnectEnd = (event) => {
+    const targetNodeElement = document.elementFromPoint(event.clientX, event.clientY);
+    if (!targetNodeElement) return;
 
-      const { x, y } = reactFlowInstance.project({ x: event.clientX, y: event.clientY })
-      const newNodeId = uuidv4();
+    const nodeId = targetNodeElement.closest(".react-flow__node")?.getAttribute("data-id");
+    if (!nodeId || nodeId === newEdge.source) return; // Evita conectar no próprio nó
 
-      const newNode = {
-        id: newNodeId,
-        position: { x: x - 74, y },
-        data: { label: "Novo fluxo" },
-        type: "default",
-      };
+    setEdges((eds) => [
+      ...eds,
+      {
+        id: uuidv4(),
+        source: newEdge.source,
+        target: nodeId,
+      },
+    ]);
+    setNewEdge(null); // Reseta a prévia
+  };
 
-      setNodes((nds) => [...nds.filter((n) => n.id !== "ghost"), newNode]);
-      console.log(connectionState)
-      // setEdges((eds) =>
-      //   eds.concat({ id, source: connectionState.fromNode.id, target: id }),
-      // );
+  // useEffect(() => {
+  //   const onMouseMove = (event) => {
+  //     if (!creatingNode) return;
 
-      setGhostNode(null);
-      setCreatingNode(false);
-    },
-    [creatingNode, setNodes, setEdges]
-  );
+  //     const { x, y } = reactFlowInstance.project({ x: event.clientX, y: event.clientY })
 
-  useEffect(() => {
-    const onMouseMove = (event) => {
-      if (!creatingNode) return;
+  //     setGhostNode({
+  //       id: "ghost",
+  //       position: { x: x - 74, y },
+  //       data: { label: "Novo fluxo (prévia)" },
+  //       style: {
+  //         opacity: 0.5,
+  //         background: "#ccc",
+  //         border: "1px dashed #000",
+  //       },
+  //       height: 64,
+  //       width: 208,
+  //       type: "default",
+  //     });
+  //   };
 
-      const { x, y } = reactFlowInstance.project({ x: event.clientX, y: event.clientY })
+  //   const onMouseUp = (event) => {
+  //     if (!creatingNode) return;
+  //     onConnectEnd(event);
+  //   };
 
-      setGhostNode({
-        id: "ghost",
-        position: { x: x - 74, y },
-        data: { label: "Novo fluxo (prévia)" },
-        style: {
-          opacity: 0.5,
-          background: "#ccc",
-          border: "1px dashed #000",
-        },
-        height: 64,
-        width: 208,
-        type: "default",
-      });
-    };
+  //   window.addEventListener("mousemove", onMouseMove);
+  //   window.addEventListener("mouseup", onMouseUp);
 
-    const onMouseUp = (event) => {
-      if (!creatingNode) return;
-      onConnectEnd(event);
-    };
-
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-  }, [creatingNode]);
+  //   return () => {
+  //     window.removeEventListener("mousemove", onMouseMove);
+  //     window.removeEventListener("mouseup", onMouseUp);
+  //   };
+  // }, [creatingNode]);
 
   return (
     <div
@@ -729,6 +717,7 @@ export default function FlowApp() {
         onNodesDelete={onNodeDelete}
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
+        onNodeDragStart={onNodeDragStart}
         onEdgesDelete={onEdgeDelete}
         onPaneClick={() => {
           setSelectedNode('');
@@ -739,7 +728,6 @@ export default function FlowApp() {
         defaultEdgeOptions={{
           type: 'step',
           markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 },
-
         }}
         connectionLineType={ConnectionLineType.Step}
         nodeTypes={nodeTypes}
@@ -749,8 +737,8 @@ export default function FlowApp() {
         nodesConnectable
         snapToGrid
         connectionMode={ConnectionMode.Loose}
-        onConnectStart={onConnectStart} // 🔥 Detecta quando começa uma conexão
-        onConnectEnd={onConnectEnd} // 🔥 Cria o nó ao soltar a seta
+        onConnectStart={onConnectStart}
+        onConnectEnd={onConnectEnd}
       >
         <Background
           variant={BackgroundVariant.Dots} // Alternativamente, pode ser "lines" ou "cross"
@@ -791,7 +779,7 @@ export default function FlowApp() {
       )}
 
       {
-        nodes.some(node => JSON.stringify(node.style)?.includes('2px solid red')) &&
+        Boolean(nodesImpacted.length) &&
         <button onClick={clearImpact} className="p-2 rounded bg-red-500 absolute top-4 right-4">Limpar</button>
       }
 
