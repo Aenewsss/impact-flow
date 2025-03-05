@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
         // Define os preços dos planos
         const planPrices = {
             monthly: "price_1QzMD1LRYIKQfCZNObyqaRb3", // ID do plano mensal na Stripe
-            yearly: "price_1QzMDhLRYIKQfCZNigvNE4y5", // ID do plano anual na Stripe
+            yearly: "price_1QzMR2LRYIKQfCZNQO4NcXnX", // ID do plano anual na Stripe
         };
 
         // Criar a sessão de checkout
