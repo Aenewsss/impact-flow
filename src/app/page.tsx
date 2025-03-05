@@ -738,16 +738,18 @@ export default function FlowApp() {
     const edges = [];
     const createdNodes = new Map(); // Para evitar nós duplicados
 
-    const processObject = (obj, parentKey, parentNodeId = null, depth = 0) => {
+    const processObject = (obj, parentKey, parentId = null, parentSourceId = null, depth = 0) => {
       const nodeId = uuidv4();
       const fields = {};
 
       // 🔥 Criar IDs únicos para cada campo dentro do nó
-      Object.keys(obj).forEach((key) => {
-        const handleId = `${parentKey}-${key}`;
+      Object.entries(obj).forEach(([key, value]) => {
+        const isObject = typeof value == 'object' && !Array.isArray(value)
+
         fields[key] = {
-          value: obj[key],
-          handleId, // 🔗 Guarda o ID do handle para conexões futuras
+          ...(isObject ? {} : { value }),
+          ...(isObject ? { sourceId: uuidv4() } : {}),
+          isObject
         };
       });
 
@@ -763,21 +765,22 @@ export default function FlowApp() {
         createdNodes.set(nodeId, true);
       }
 
-      // Conectar o nó pai ao nó atual se houver
-      if (parentNodeId) {
+      // // Conectar o nó pai ao nó atual se houver
+      if (parentKey != 'Root') {
         edges.push({
-          id: `edge-${parentNodeId}-${nodeId}`,
-          source: parentNodeId,
-          sourceHandle: `source-right-${parentKey}`,  // 🔗 Conectar ao handle correto
-          target: nodeId,
+          id: uuidv4(),
+          source: parentId,  // id do node pai
+          sourceHandle: `source-right-${parentSourceId}`,  // 🔗 Conectar ao handle correto
+          target: nodeId, // id do node atual
           targetHandle: `target-left-${nodeId}`,  // 🔗 Conectar ao handle do novo nó
         });
       }
 
-      // Criar novos nós para objetos dentro do JSON
+      console.log('edges:', edges)
+      // // Criar novos nós para objetos dentro do JSON
       Object.entries(obj).forEach(([key, value]) => {
         if (typeof value === "object" && value !== null) {
-          processObject(value, key, nodeId, depth + 1);
+          processObject(value, key, nodeId, fields[key].sourceId, depth + 1);
         }
       });
     };
