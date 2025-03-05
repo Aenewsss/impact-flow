@@ -1,13 +1,12 @@
 'use client'
 import { CustomNode } from "@/components/CustomNode";
-import html2canvas from "html2canvas";
 import { auth, realtimeDb } from "@/config/firebase";
 import impactService from "@/services/impact.service";
 import { showToast } from "@/utils/show-toast.util";
-import { get, onValue, ref, remove, set } from "firebase/database";
+import { get, ref, remove, set } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import React, { useState, useCallback, useEffect } from "react";
-import ReactFlow, { Controls, addEdge, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, SelectionMode, MiniMap, ConnectionMode, Edge, } from "reactflow";
+import ReactFlow, { Controls, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, SelectionMode, MiniMap, ConnectionMode, Edge, Background, BackgroundVariant, ConnectionLineType, } from "reactflow";
 import "reactflow/dist/style.css";
 import { useRouter } from "next/navigation";
 import userService from "@/services/user.service";
@@ -15,15 +14,20 @@ import { PlanEnum } from "@/enum/plan.enum";
 import PricingModal from "@/components/PricingModal";
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import CreateNewFolderOutlinedIcon from '@mui/icons-material/CreateNewFolderOutlined';
-import FolderSpecialOutlinedIcon from '@mui/icons-material/FolderSpecialOutlined';
 import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import { v4 as uuidv4 } from "uuid"; // 📌 Importar biblioteca para gerar IDs únicos
-import CustomGroup from "@/components/GroupNode";
 import Tooltip from "@/components/Tooltip";
-import { FileDownload, FileDownloadOutlined } from "@mui/icons-material";
-import CustomEdge from "@/components/CustomEdge";
-import { saveAs } from "file-saver";
-import { Document, Packer, Paragraph, TextRun } from "docx";
+import { CommentOutlined, DarkModeOutlined, DataObjectOutlined, FileDownload, FileDownloadOutlined, GroupAddOutlined, LightModeOutlined, ScreenshotMonitorOutlined, TabUnselectedOutlined } from "@mui/icons-material";
+
+import { useNodesStore } from "@/store/nodes.store";
+import { exportToDoc } from "./functions/export-doc.function";
+import { captureScreenshot } from "./functions/screenshot.function";
+import { PreviewNode } from "@/components/PreviewNode";
+import { AnnotationNode } from "@/components/AnnotationNode";
+import { useThemeStore } from "@/store/theme.store";
+import GroupNode from "@/components/GroupNode";
+import CustomJsonNode from "@/components/JsonNode";
+
 
 // Expressões Regulares
 const FUNCTION_REGEX = /(export\s+default\s+function|export\s+function|const|async function|function|class)\s+([a-zA-Z0-9_]+)\s*\(/g;
@@ -35,25 +39,33 @@ const IGNORED_FILES = ["package.json", "package-lock.json", "yarn.lock", "pnpm-l
 
 const nodeTypes = {
   custom: CustomNode,
-  group: CustomGroup
+  preview: PreviewNode,
+  annotation: AnnotationNode,
+  folder: GroupNode,
+  jsonNode: CustomJsonNode,
 };
 
 export default function FlowApp() {
   const router = useRouter()
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [selectedNode, setSelectedNode] = useState(null);
-  const [userUID, setUserUID] = useState<string | null>(null); // Estado para armazenar e-mail do usuário
+  const [nodesReactFlow, , onNodesChange] = useNodesState([]);
+  const [, , onEdgesChange] = useEdgesState([]);
   const [showEmptyEdges, setShowEmptyEdges] = useState(false);
   const [showModalSubscription, setShowModalSubscription] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [showAITextarea, setShowAITextarea] = useState(false);
   const [nodesImpacted, setNodesImpacted] = useState([]);
-  const [nodeImpactSource, setNodeImpactSource] = useState('');
-
+  const [newEdge, setNewEdge] = useState(null);
   const reactFlowInstance = useReactFlow(); // Hook para pegar as dimensões da tela
+
+  const {
+    selectedNode, setSelectedNode, ghostNode,
+    userUID, setUserUID, nodes, setNodes, edges,
+    setEdges, addNode, updateNodePosition, addEdge
+  } = useNodesStore(store => store)
+
+  const { theme, toggleTheme } = useThemeStore();
 
   useEffect(() => {
     // Obter o usuário autenticado
@@ -75,26 +87,9 @@ export default function FlowApp() {
     fetchNodes()
   }, [userUID]);
 
-
   const handleNodesChange = (changes) => {
     onNodesChange(changes); // 🔥 Mantém o comportamento original do React Flow
-
-    setNodes(prevNodes =>
-      prevNodes.map(node => {
-        // 🔥 Verifica se o node está selecionado atualmente ou foi alterado pelo evento
-        const isSelected = changes.some(change => change.id === node.id ? change.selected ?? node.selected : node.selected);
-
-        return {
-          ...node,
-          selected: isSelected, // 🔥 Mantém a seleção ao adicionar novos nodes
-          style: {
-            ...node.style,
-            border: isSelected ? "3px solid #3C153F" : (node.style?.border as string)?.includes('solid red') ? node.style.border : "none",
-            borderRadius: isSelected ? "8px" : "0px",
-          }
-        };
-      })
-    );
+    updateNodePosition(changes)
   };
 
   async function generateFlow() {
@@ -212,8 +207,8 @@ export default function FlowApp() {
           })
           .filter(Boolean);
 
-        setNodes(prevNodes => [...prevNodes, ...uniqueNodes]);
-        setEdges(prevEdges => [...prevEdges, ...uniqueEdges]);
+        setNodes([...nodes, ...uniqueNodes]);
+        setEdges([...edges, ...uniqueEdges]);
 
         if (firstNodePosition) {
           reactFlowInstance.setCenter(firstNodePosition.x, firstNodePosition.y);
@@ -259,10 +254,9 @@ export default function FlowApp() {
         ...node,
         position: node.position || { x: 0, y: 0 },
       }));
-      console.log(nodesData)
+
       setNodes(nodesData);
     }
-
 
     const edgesSnapshot = await get(edgesRef)
     if (edgesSnapshot.exists()) {
@@ -276,25 +270,26 @@ export default function FlowApp() {
 
   const onConnect = useCallback(
     async (params) => {
+
       if (!userUID) return;
 
-      setEdges((eds) => addEdge(params, eds))
-      const connectionRef = ref(realtimeDb, `connections/${userUID}/${params.source}-${params.target}-${params.sourceHandle}-${params.targetHandle}`);
-      try {
-        await set(connectionRef, {
-          ...params,
-          id: uuidv4(),
-        });
-      } catch (error) {
-        console.error("Erro ao criar conexão:", error);
+      // Se a conexão já tem target, segue o fluxo normal
+      if (params.target) {
+        addEdge({ ...params, id: uuidv4() }, userUID)
       }
     },
-    [setEdges, userUID]
+    [setEdges, setNodes, userUID]
   );
 
   const onNodeClick = (event: any, node: Node) => {
     const edgesImpacted = edges.filter(edge => edge.source == node.id)
+    setSelectedNode(node.id);
 
+    const nodesImpacted = edgesImpacted.map(ed => nodes.find(node => node.id == ed.target))
+    setShowEmptyEdges(nodesImpacted.length == 0)
+  };
+  const onNodeDragStart = (event: any, node: Node) => {
+    const edgesImpacted = edges.filter(edge => edge.source == node.id)
     setSelectedNode(node.id);
 
     const nodesImpacted = edgesImpacted.map(ed => nodes.find(node => node.id == ed.target))
@@ -302,7 +297,7 @@ export default function FlowApp() {
   };
 
   const onNodeChange = (id, label) => {
-    setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { label } } : n)));
+    setNodes(nodes.map((n) => (n.id === id ? { ...n, data: { label } } : n)));
 
     setTimeout(() => {
       // Encontra o nó atualizado na lista de nodes
@@ -316,47 +311,106 @@ export default function FlowApp() {
     }, 1000);
   };
 
-  function viewImpact(event, nodeId, nodesImpacted = new Set()) {
-    // Se for a primeira chamada, começamos com o nó selecionado
-    if (!nodeId) {
-      nodeId = selectedNode
-      // @ts-ignore
-      setNodeImpactSource(nodes.find(el => el.id == selectedNode).data.label)
-    };
+  function viewImpact(event, nodeId, nodesImpacted = new Map(), visited = new Map(), depth = 0) {
+    if (!nodeId) nodeId = selectedNode;
 
-    // Encontra todas as conexões de saída a partir do nó atual
+    // 🔥 Se o nó já foi visitado pela mesma fonte, evitamos loops infinitos
+    if (visited.has(nodeId) && visited.get(nodeId).includes(selectedNode)) {
+      return;
+    }
+
+    // 🔥 Registra a nova fonte na lista de visitas
+    if (!visited.has(nodeId)) {
+      visited.set(nodeId, [selectedNode]);
+    } else {
+      visited.get(nodeId).push(selectedNode);
+    }
+
+    // Filtra todas as conexões de saída do nó atual
     const edgesImpacted = edges.filter(edge => edge.source === nodeId);
 
     // Encontra os nós impactados por essas conexões
     const newNodes = edgesImpacted
       .map(edge => nodes.find(node => node.id === edge.target))
-      .filter(node => node && !nodesImpacted.has(node.id)); // Evita loops infinitos
+      .filter(node => node); // Evita nós nulos
 
-    // Adiciona os novos nós impactados ao conjunto
-    newNodes.forEach(node => nodesImpacted.add(node.id));
+    // Adiciona os novos nós impactados ao conjunto e registra a origem do impacto
+    newNodes.forEach(node => {
+      if (!nodesImpacted.has(node.id)) {
+        nodesImpacted.set(node.id, {
+          sources: [nodeId], // 🌟 Agora armazenamos um **array de fontes**
+          directSources: nodeId === selectedNode ? [nodeId] : [], // ✅ Se for direto, salva aqui
+          indirectSources: nodeId !== selectedNode ? [nodeId] : [], // ✅ Se for indireto, salva aqui
+        });
+      } else {
+        nodesImpacted.get(node.id).sources.push(nodeId); // 🌟 Adicionamos a nova fonte ao array
+        if (nodeId === selectedNode) {
+          nodesImpacted.get(node.id).directSources.push(nodeId);
+        } else {
+          nodesImpacted.get(node.id).indirectSources.push(nodeId);
+        }
+      }
+    });
 
-    // Se ainda há nós a processar, continua a recursão
-    newNodes.forEach(node => viewImpact(null, node.id, nodesImpacted));
+    // Continua a recursão para os impactos indiretos **apenas se não foi visitado pela mesma fonte**
+    newNodes.forEach(node => viewImpact(null, node.id, nodesImpacted, visited, depth + 1));
 
-    // Se for a última iteração, atualiza o estado
+    // Se for a última iteração, atualiza o estado e estiliza os nós
     if (nodeId === selectedNode) {
-      const nodesImpactedArray = Array.from(nodesImpacted).map(nodeId => ({
-        ...nodes.find(n => n.id === nodeId),
-        style: { border: "2px solid red" },
-      }));
+      const nodesImpactedArray = Array.from(nodesImpacted.entries()).map(([nodeId, impactData]) => {
+        const node = nodes.find(n => n.id === nodeId);
 
-      const nodesNoImpacted = nodes.filter(node => !nodesImpacted.has(node.id));
+        return {
+          ...node,
+          style: impactData.directSources.length > 0
+            ? { border: "2px solid red" } // 🔴 Impacto direto
+            : { border: "2px solid orange" }, // 🟠 Impacto indireto
+          data: {
+            ...node.data,
+            impactInfo: {
+              direct: impactData.directSources.map(id => nodes.find(n => n.id == id)?.data.label),
+              indirect: impactData.indirectSources.map(id => nodes.find(n => n.id == id)?.data.label)
+            }
+          },
+          type: 'custom'
+        };
+      });
 
-      setNodes([...nodesNoImpacted, ...nodesImpactedArray]);
-      setNodesImpacted(nodesImpactedArray.map(el => el.data.label))
+      // 📌 🔥 Mantém os edges que conectam os nós impactados
+      const impactedEdges = edges.filter(edge => nodesImpacted.has(edge.target) && (nodesImpacted.has(edge.source) || edge.source == selectedNode));
+
+      const updatedNodes = nodes.map(node => {
+        if (nodesImpacted.has(node.id)) {
+          const impactData = nodesImpacted.get(node.id);
+
+          return {
+            ...node,
+            style: impactData.directSources.length > 0
+              ? { border: "2px solid red" }  // 🔴 Impacto direto
+              : { border: "2px solid orange" }, // 🟠 Impacto indireto
+            data: {
+              ...node.data,
+              impactInfo: {
+                direct: impactData.directSources.map(id => nodes.find(n => n.id == id)?.data.label),
+                indirect: impactData.indirectSources.map(id => nodes.find(n => n.id == id)?.data.label)
+              }
+            },
+            type: 'custom'
+          };
+        }
+        return node; // Mantém os nós inalterados
+      });
+
+      setNodes(updatedNodes);
+      setNodesImpacted(nodesImpactedArray.map(el => el.id));
+      setEdges(impactedEdges);
     }
   }
 
   function clearImpact() {
-    fetchNodes()
     setSelectedNode('')
     setNodesImpacted([])
-    setNodeImpactSource('')
+    fetchNodes()
   }
 
   const onNodeDragStop = (event, node) => {
@@ -385,11 +439,12 @@ export default function FlowApp() {
       id: uuidv4(),
       type: "custom",
       position: { x: centerX, y: centerY },
-      data: { label: `Novo fluxo ${nodes.length + 1}` },
+      data: { label: '' },
+      height: 64,
+      width: 208,
     };
 
-    setNodes((prevNodes) => [...prevNodes, newNode]);
-    impactService.updateFlow(newNode, userUID);
+    addNode(newNode, userUID)
   };
 
   const onEdgeDelete = async (edges: Edge[]) => {
@@ -397,7 +452,7 @@ export default function FlowApp() {
       const connectionRef = ref(realtimeDb, `connections/${userUID}/${edge.source}-${edge.target}-${edge.sourceHandle}-${edge.targetHandle}`);
       try {
         await remove(connectionRef);
-        setEdges((eds) => eds.filter((e) => e.id !== edge.id));
+        setEdges(edges.filter((e) => e.id !== edge.id));
       } catch (error) {
         console.error("Erro ao remover conexão:", error);
       }
@@ -407,6 +462,7 @@ export default function FlowApp() {
   const onNodeDelete = async (node) => {
     impactService.removeFlow(userUID, node[0].id)
     setSelectedNode('')
+    setNodes(nodes.filter(el => el.id != node[0].id))
   }
 
   async function handleFolderSelection() {
@@ -552,8 +608,8 @@ export default function FlowApp() {
     });
 
     // 🔥 Atualizar o React Flow
-    setNodes(prevNodes => [...prevNodes, ...newNodes]);
-    setEdges(prevEdges => [...prevEdges, ...newEdges]);
+    setNodes([...nodes, ...newNodes]);
+    setEdges([...edges, ...newEdges]);
 
     for (const node of newNodes) {
       const nodeRef = ref(realtimeDb, `flows/${userUID}/${node.id}`);
@@ -567,88 +623,201 @@ export default function FlowApp() {
     }
   }
 
-  async function captureScreenshot() {
-    const flowContainer = document.querySelector(".react-flow"); // Certifique-se de pegar o container correto
-    if (!flowContainer) {
-      console.error("Elemento do fluxo não encontrado.");
-      return;
-    }
+  // const onConnectStart = useCallback((_, { nodeId, handleId }) => {
+  // setCreatingNode({ source: nodeId, sourceHandle: handleId });
+  // }, []);
 
-    try {
-      const canvas = await html2canvas(flowContainer as any);
-      const image = canvas.toDataURL("image/png");
+  // const onConnectEnd = useCallback(
+  // (event, connectionState?: any) => {
+  // if (!creatingNode) return;
 
-      // Criar um link para baixar a imagem
-      const link = document.createElement("a");
-      link.href = image;
-      link.download = "screenshot.png";
-      link.click();
-    } catch (error) {
-      console.error("Erro ao capturar a tela:", error);
-    }
-  }
+  // const { x, y } = reactFlowInstance.project({ x: event.clientX, y: event.clientY })
+  // const newNodeId = uuidv4();
 
-  function exportToDoc(sourceFlow, fluxosImpactados: string[]) {
-    if (!fluxosImpactados.length) {
-      alert("Nenhum fluxo impactado para exportar!");
-      return;
-    }
+  // const newNode = {
+  //   id: newNodeId,
+  //   position: { x: x - 74, y },
+  //   data: { label: "Novo fluxo" },
+  //   type: "default",
+  // };
 
-    // Criar um documento
-    const doc = new Document({
-      sections: [
-        {
-          properties: {},
-          children: [
-            new Paragraph({
-              children: [
-                new TextRun({
-                  text: "Fluxos Impactados",
-                  bold: true,
-                  size: 28, // Tamanho da fonte
-                }),
-              ],
-            }),
-            new Paragraph({
-              children: [new TextRun({ text: `Fluxo de origem: ${sourceFlow}`, size: 24 })],
-            }),
-            ...fluxosImpactados.map((fluxo) =>
-              new Paragraph({
-                children: [new TextRun({ text: fluxo, size: 16 })],
-              })
-            ),
-          ],
-        },
-      ],
-    });
+  // setNodes((nds) => [...nds.filter((n) => n.id !== "ghost"), newNode]);
+  // // setEdges((eds) =>
+  // //   eds.concat({ id, source: connectionState.fromNode.id, target: id }),
+  // // );
 
-    // Gerar e baixar o arquivo
-    Packer.toBlob(doc).then((blob) => {
-      saveAs(blob, "fluxos_impactados.docx");
-    });
-  }
+  // setGhostNode(null);
+  // setCreatingNode(false);
+  // },
+  // [creatingNode, setNodes, setEdges]
+  // );
+
+  const onConnectStart = (_, { nodeId, handleType }) => {
+    setNewEdge({ source: nodeId, sourceHandle: handleType });
+  };
+
+  // Quando solta o mouse, cria a conexão
+  const onConnectEnd = (event) => {
+    const targetNodeElement = document.elementFromPoint(event.clientX, event.clientY);
+    if (!targetNodeElement) return;
+
+    const nodeId = targetNodeElement.closest(".react-flow__node")?.getAttribute("data-id");
+    if (!nodeId || nodeId === newEdge.source) return; // Evita conectar no próprio nó
+
+    setEdges([
+      ...edges,
+      {
+        id: uuidv4(),
+        source: newEdge.source,
+        target: nodeId,
+      },
+    ]);
+    setNewEdge(null); // Reseta a prévia
+  };
+
+  // Função para criar uma anotação
+  const createAnnotation = async () => {
+    if (!reactFlowInstance) return;
+
+    const viewport = reactFlowInstance.getViewport();
+    if (!viewport) return;
+
+    const { x, y, zoom } = viewport;
+    const centerX = (window.innerWidth / 2 - x) / zoom;
+    const centerY = (window.innerHeight / 2 - y) / zoom;
+
+    const newAnnotation = {
+      id: uuidv4(),
+      type: "annotation", // Tipo especial para diferenciar
+      position: { x: centerX, y: centerY },
+      data: { text: "Escreva uma anotação..." },
+      height: 300,
+      width: 200,
+    };
+
+    addNode(newAnnotation, userUID);
+
+    // 🔥 Salva no Firebase
+    const annotationRef = ref(realtimeDb, `annotations/${userUID}/${newAnnotation.id}`);
+    await set(annotationRef, newAnnotation);
+  };
+
+  const createNewGroup = () => {
+    const newGroup = {
+      id: uuidv4(),
+      type: "folder",
+      position: { x: 200, y: 200 }, // Ajuste conforme necessário
+      data: { label: "Novo Grupo" },
+      width: 300,
+      height: 200,
+    };
+
+    addNode(newGroup, userUID);
+  };
+
+
+  const handleJSONUpload = (event) => {
+    const file = event.target.files[0];
+
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const json = JSON.parse(e.target.result as any);
+        generateDiagramFromJSON(json);
+      } catch (error) {
+        alert("Erro ao carregar JSON. Verifique o formato.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const generateDiagramFromJSON = (json) => {
+    const nodes = [];
+    const edges = [];
+    const createdNodes = new Map(); // Para evitar nós duplicados
+
+    const processObject = (obj, parentKey, parentId = null, parentSourceId = null, depth = 0) => {
+      const nodeId = uuidv4();
+      const fields = {};
+
+      // 🔥 Criar IDs únicos para cada campo dentro do nó
+      Object.entries(obj).forEach(([key, value]) => {
+        const isObject = typeof value == 'object' && !Array.isArray(value)
+
+        fields[key] = {
+          ...(isObject ? {} : { value }),
+          ...(isObject ? { sourceId: uuidv4() } : {}),
+          isObject
+        };
+      });
+
+      // Criar o nó principal do objeto
+      if (!createdNodes.has(nodeId)) {
+        nodes.push({
+          id: nodeId,
+          type: "jsonNode",
+          position: { x: 250 * depth, y: 100 + nodes.length * 150 },
+          data: { label: parentKey, fields }, // Agora cada campo tem um handleId
+          width: 200, height: 300
+        });
+        createdNodes.set(nodeId, true);
+      }
+
+      // // Conectar o nó pai ao nó atual se houver
+      if (parentKey != 'Root') {
+        edges.push({
+          id: uuidv4(),
+          source: parentId,  // id do node pai
+          sourceHandle: `source-right-${parentSourceId}`,  // 🔗 Conectar ao handle correto
+          target: nodeId, // id do node atual
+          targetHandle: `target-left-${nodeId}`,  // 🔗 Conectar ao handle do novo nó
+        });
+      }
+
+      console.log('edges:', edges)
+      // // Criar novos nós para objetos dentro do JSON
+      Object.entries(obj).forEach(([key, value]) => {
+        if (typeof value === "object" && value !== null) {
+          processObject(value, key, nodeId, fields[key].sourceId, depth + 1);
+        }
+      });
+    };
+
+    // 🏗️ Iniciar o processamento do JSON
+    processObject(json, "Root");
+
+    // 🔄 Adicionar os nós e edges ao diagrama
+    nodes.forEach((node) => addNode(node, userUID));
+    edges.forEach((edge) => addEdge(edge, userUID));
+  };
 
   return (
-    <div style={{ width: "100vw", height: "100vh" }}>
+    <div className="w-scree h-screen">
       <ReactFlow
-        nodes={nodes} edges={edges}
+        nodes={ghostNode ? [...nodes, ghostNode] : nodes} // 🔥 Mostra o nó fantasma
+        edges={edges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodesDelete={onNodeDelete}
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
+        onNodeDragStart={onNodeDragStart}
         onEdgesDelete={onEdgeDelete}
         onPaneClick={() => {
           setSelectedNode('');
           setShowAITextarea(false)
+          setNodesImpacted([])
         }}
         fitView
-        className="bg-zinc-900"
+        className={`${theme === 'dark' ? 'bg-zinc-900 text-white' : 'bg-white text-black'}`}
         defaultEdgeOptions={{
+          type: 'step',
           markerEnd: { type: MarkerType.ArrowClosed, strokeWidth: 4 },
-
         }}
+        connectionLineType={ConnectionLineType.Step}
         nodeTypes={nodeTypes}
         selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode="Shift" // 🔥 Usa Shift para seleção múltipla
@@ -656,9 +825,17 @@ export default function FlowApp() {
         nodesConnectable
         snapToGrid
         connectionMode={ConnectionMode.Loose}
+        onConnectStart={onConnectStart}
+        onConnectEnd={onConnectEnd}
       >
+        <Background
+          variant={BackgroundVariant.Dots} // Alternativamente, pode ser "lines" ou "cross"
+          gap={12}       // Espaçamento entre os pontos
+          size={1}       // Tamanho dos pontos
+          color="#aaa"   // Cor do grid
+        />
         <Controls />
-        <MiniMap />
+        {/* <MiniMap /> */}
       </ReactFlow>
 
       {selectedNode && (
@@ -690,7 +867,7 @@ export default function FlowApp() {
       )}
 
       {
-        nodes.some(node => JSON.stringify(node.style)?.includes('2px solid red')) &&
+        Boolean(nodesImpacted.length) &&
         <button onClick={clearImpact} className="p-2 rounded bg-red-500 absolute top-4 right-4">Limpar</button>
       }
 
@@ -742,6 +919,38 @@ export default function FlowApp() {
           </button>
         </Tooltip>
 
+        <Tooltip text="Criar anotação">
+          <button
+            onClick={createAnnotation}
+            className="p-3 rounded-full transition-all hover:scale-110 bg-yellow-500 text-white shadow-md shadow-yellow-500 flex items-center justify-center"
+            title="Criar Anotação"
+          >
+            <CommentOutlined />
+          </button>
+        </Tooltip>
+
+        <Tooltip text="Importar JSON">
+          <label
+            className="p-3 rounded-full transition-all hover:scale-110 bg-orange-500 text-white shadow-lg flex items-center justify-center cursor-pointer"
+            title="Importar JSON"
+          >
+            <input type="file" accept="application/json" className="hidden" onChange={handleJSONUpload} />
+            <DataObjectOutlined />
+          </label>
+        </Tooltip>
+
+        {/* <Tooltip text="Criar grupo">
+          <button
+            onClick={createNewGroup}
+            className="p-3 rounded-full transition-all hover:scale-110 bg-purple-600 text-white shadow-lg flex items-center justify-center"
+            title="Criar Grupo"
+          >
+            <TabUnselectedOutlined />
+          </button>
+        </Tooltip> */}
+
+
+
         <Tooltip text="Criar fluxo com IA">
           <button
             onClick={() => setShowAITextarea(!showAITextarea)}
@@ -752,13 +961,13 @@ export default function FlowApp() {
           </button>
         </Tooltip>
 
-        <Tooltip text="Baixar fluxo">
+        <Tooltip text="Capturar fluxo">
           <button
             onClick={captureScreenshot}
             className="p-3 rounded-full transition-all hover:scale-110 bg-teal-600 text-white shadow-lg flex items-center justify-center"
             title="Baixar fluxo"
           >
-            <FileDownloadOutlined />
+            <ScreenshotMonitorOutlined />
           </button>
         </Tooltip>
 
@@ -769,6 +978,16 @@ export default function FlowApp() {
             title="Importar Código"
           >
             <UploadFileOutlinedIcon />
+          </button>
+        </Tooltip>
+
+        <Tooltip text={`Tema ${theme == 'dark' ? 'light' : 'dark'}`}>
+          <button
+            onClick={toggleTheme}
+            className="p-3 rounded-full transition-all hover:scale-110 bg-gray-600 text-white shadow-lg flex items-center justify-center"
+            title="Alternar Tema"
+          >
+            {theme === 'dark' ? <LightModeOutlined /> : <DarkModeOutlined />}
           </button>
         </Tooltip>
 
@@ -787,14 +1006,26 @@ export default function FlowApp() {
           <div className="absolute top-1/4 left-10 shadow-md shadow-black rounded p-4 bg-zinc-900">
             <div className="flex flex-col gap-4">
               <h2 className="text-white text-xl">Fluxos de impacto</h2>
-              <h3>Origem: {nodeImpactSource}</h3>
+              <h3>Origem: {nodes.find(nd => nd.id == selectedNode).data.label}</h3>
               {nodesImpacted.map((el, index) =>
                 <div key={index}>
-                  <span>{el}</span>
+                  <span>{nodes.find(n => n.id == el).data.label}</span>
                 </div>
               )}
               <button
-                onClick={() => exportToDoc(nodeImpactSource, nodesImpacted)}
+                onClick={() =>
+                  exportToDoc(
+                    nodes.find(nd => nd.id == selectedNode).data.label,
+                    nodesImpacted.map((nodeId) => {
+                      const node = nodes.find(n => n.id == nodeId);
+
+                      return {
+                        name: node.data.label,
+                        impactInfo: node.data.impactInfo, // Passa os impactos diretos e indiretos
+                      };
+                    })
+                  )
+                }
                 className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
               >
                 Exportar <FileDownloadOutlined />

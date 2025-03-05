@@ -1,52 +1,28 @@
-import React, { useCallback } from "react";
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps, MarkerType } from "reactflow";
+import { BaseEdge, EdgeProps, getSmoothStepPath, MarkerType } from "reactflow";
 
-export default function CustomEdge({ id, sourceX, sourceY, targetX, targetY, selected, setEdges }: EdgeProps & { setEdges: any }) {
-  // 📌 Calcula a curva da conexão e a posição do rótulo (label)
-  const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY });
+export const CustomEdge = ({ id, sourceX, sourceY, targetX, targetY,target: targetHandle}: EdgeProps) => {
+  console.log(`Edge Rendered - ID: ${id}, targetHandle: ${targetHandle}`);
 
-  // 📌 Função para remover a conexão ao clicar no "X"
-  const onRemove = useCallback(() => {
-    setEdges((edges: any) => edges.filter((edge: any) => edge.id !== id));
-  }, [id, setEdges]);
+  // Ajusta a posição com base no Handle correto
+  let adjustedTargetX = targetX;
+  let adjustedTargetY = targetY;
 
-  return (
-    <>
-      {/* 🔥 Renderiza a conexão com a seta no final */}
-      <BaseEdge
-      
-        path={edgePath}
-        // @ts-ignore
-        markerEnd={{ type: MarkerType.ArrowClosed, strokeWidth: 4 }} // ✅ Mantém a seta
-      />
+  if (targetHandle === "target-top") {
+    adjustedTargetY -= 10;
+  } else if (targetHandle === "target-bottom") {
+    adjustedTargetY += 10;
+  } else if (targetHandle === "target-left") {
+    adjustedTargetX -= 10;
+  } else if (targetHandle === "target-right") {
+    adjustedTargetX += 10;
+  }
 
-      {/* Adiciona um "X" apenas quando a conexão está selecionada */}
-      {selected && (
-        <EdgeLabelRenderer>
-          <div
-            style={{
-              position: "absolute",
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              background: "red",
-              color: "white",
-              padding: "4px 8px",
-              borderRadius: "50%",
-              fontSize: "12px",
-              fontWeight: "bold",
-              cursor: "pointer",
-              userSelect: "none",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: "20px",
-              height: "20px",
-            }}
-            onClick={onRemove}
-          >
-            ✕
-          </div>
-        </EdgeLabelRenderer>
-      )}
-    </>
-  );
-}
+  const [edgePath] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    targetX: adjustedTargetX,
+    targetY: adjustedTargetY,
+  });
+
+  return <BaseEdge markerEnd={MarkerType.ArrowClosed} id={id} path={edgePath} />;
+};
