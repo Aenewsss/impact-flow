@@ -1,8 +1,6 @@
 import { BaseEdge, EdgeProps, getSmoothStepPath, MarkerType } from "reactflow";
 
 export const CustomEdge = ({ id, sourceX, sourceY, targetX, targetY,target: targetHandle}: EdgeProps) => {
-  console.log(`Edge Rendered - ID: ${id}, targetHandle: ${targetHandle}`);
-
   // Ajusta a posição com base no Handle correto
   let adjustedTargetX = targetX;
   let adjustedTargetY = targetY;

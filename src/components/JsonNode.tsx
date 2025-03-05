@@ -2,8 +2,6 @@ import React from "react";
 import { Handle, Position } from "reactflow";
 
 const CustomJsonNode = ({ data, id }) => {
-    console.log(id)
-
     return (
         <div className="bg-white border shadow-md rounded-md w-72 relative text-black">
             {/* Título do nó */}

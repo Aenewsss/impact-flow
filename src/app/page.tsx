@@ -5,7 +5,7 @@ import impactService from "@/services/impact.service";
 import { showToast } from "@/utils/show-toast.util";
 import { get, ref, remove, set } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import ReactFlow, { Controls, useNodesState, useEdgesState, Node, MarkerType, useReactFlow, SelectionMode, MiniMap, ConnectionMode, Edge, Background, BackgroundVariant, ConnectionLineType, } from "reactflow";
 import "reactflow/dist/style.css";
 import { useRouter } from "next/navigation";
@@ -47,6 +47,8 @@ const nodeTypes = {
 
 export default function FlowApp() {
   const router = useRouter()
+
+  const fileInputRef = useRef<HTMLInputElement>(null); // 🔥 Criamos uma referência para o input
 
   const [nodesReactFlow, , onNodesChange] = useNodesState([]);
   const [, , onEdgesChange] = useEdgesState([]);
@@ -677,6 +679,11 @@ export default function FlowApp() {
 
   // Função para criar uma anotação
   const createAnnotation = async () => {
+    if (await userService.getUserPlan(userUID) == PlanEnum.FREE && nodes.length >= 10) {
+      showToast("Você atingiu o limite do plano gratuito", 'warning');
+      return setShowModalSubscription(true)
+    }
+
     if (!reactFlowInstance) return;
 
     const viewport = reactFlowInstance.getViewport();
@@ -776,7 +783,6 @@ export default function FlowApp() {
         });
       }
 
-      console.log('edges:', edges)
       // // Criar novos nós para objetos dentro do JSON
       Object.entries(obj).forEach(([key, value]) => {
         if (typeof value === "object" && value !== null) {
@@ -931,13 +937,31 @@ export default function FlowApp() {
 
         <Tooltip text="Importar JSON">
           <label
+            id="label-json"
             className="p-3 rounded-full transition-all hover:scale-110 bg-orange-500 text-white shadow-lg flex items-center justify-center cursor-pointer"
             title="Importar JSON"
+            onClick={async () => {
+              const userPlan = await userService.getUserPlan(userUID);
+
+              // 🔥 Impede a abertura do explorador de arquivos se o usuário estiver no plano FREE e já tiver 10 nós
+              if (userPlan === PlanEnum.FREE && nodes.length >= 10) {
+                showToast("Você atingiu o limite do plano gratuito", 'warning');
+                return setShowModalSubscription(true);
+              }
+
+              fileInputRef.current.click()
+            }}
           >
-            <input type="file" accept="application/json" className="hidden" onChange={handleJSONUpload} />
             <DataObjectOutlined />
           </label>
         </Tooltip>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json"
+          className="hidden"
+          onChange={handleJSONUpload} // ✅ O JSON só será processado se o usuário tiver permissão
+        />
 
         {/* <Tooltip text="Criar grupo">
           <button
@@ -953,7 +977,13 @@ export default function FlowApp() {
 
         <Tooltip text="Criar fluxo com IA">
           <button
-            onClick={() => setShowAITextarea(!showAITextarea)}
+            onClick={async () => {
+              if (await userService.getUserPlan(userUID) == PlanEnum.FREE && nodes.length >= 10) {
+                showToast("Você atingiu o limite do plano gratuito", 'warning');
+                return setShowModalSubscription(true)
+              }
+              setShowAITextarea(!showAITextarea)
+            }}
             className="p-3 rounded-full transition-all hover:scale-110 bg-blue-600 text-white shadow-lg flex items-center justify-center"
             title="Abrir IA"
           >
@@ -971,7 +1001,7 @@ export default function FlowApp() {
           </button>
         </Tooltip>
 
-        <Tooltip text="Importar código">
+        {/* <Tooltip text="Importar código">
           <button
             onClick={handleFolderSelection}
             className="p-3 rounded-full transition-all hover:scale-110 bg-green-600 text-white shadow-lg flex items-center justify-center"
@@ -979,7 +1009,7 @@ export default function FlowApp() {
           >
             <UploadFileOutlinedIcon />
           </button>
-        </Tooltip>
+        </Tooltip> */}
 
         <Tooltip text={`Tema ${theme == 'dark' ? 'light' : 'dark'}`}>
           <button
